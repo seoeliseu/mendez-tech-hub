@@ -1,0 +1,372 @@
+---
+title: "JWT — JSON Web Tokens"
+slug: jwt
+category: backend
+icon: "🔐"
+accent: "#f472b6"
+description: "Estrutura header.payload.signature, o algoritmo de assinatura (HS256/RS256/ES256), validação e implementação completa em C# com JwtBearer."
+tags: [JWT, Autenticação, HMAC, RS256, Claims]
+order: 7
+updated: 2026-07-22
+---
+
+## O que é JWT
+
+JWT (JSON Web Token) é um padrão aberto — **RFC 7519** — para transportar **claims** (afirmações sobre uma entidade) de forma **compacta, autocontida e assinada**. É a base da autenticação **stateless**: o servidor não guarda sessão em memória ou banco — toda a informação necessária viaja dentro do próprio token, e a **assinatura** garante que ninguém o adulterou no caminho.
+
+<Callout type="tip">
+**Autocontido e sem sessão.** No login o servidor emite um token assinado. O cliente devolve esse token em cada request. O servidor apenas **recalcula a assinatura** para validar — não precisa consultar um banco de sessões. Isso escala horizontalmente sem `sticky sessions`: qualquer instância valida qualquer token.
+</Callout>
+
+Um JWT é uma string de três partes separadas por ponto:
+
+```text
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMiLCJuYW1lIjoiRWxpc2UiLCJyb2xlIjoiYWRtaW4iLCJleHAiOjE3MzU5MDM2MDB9.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c
+```
+
+Lê-se: `base64url(header).base64url(payload).base64url(signature)` → `xxxxx.yyyyy.zzzzz`.
+
+## Anatomia de um Token
+
+<FlowDiagram
+  title="ESTRUTURA — 3 PARTES SEPARADAS POR PONTO"
+  rows={[
+    { box: "Header", color: "#f472b6", note: "algoritmo + tipo — base64url" },
+    { box: "Payload", color: "#38bdf8", indent: 1, note: "as claims (os dados) — base64url" },
+    { box: "Signature", color: "#66bb6a", indent: 2, note: "assina header + payload com a chave" },
+  ]}
+/>
+
+O **header** diz qual algoritmo assinou o token:
+
+```json
+{ "alg": "HS256", "typ": "JWT" }
+```
+
+O **payload** carrega as claims — os dados úteis:
+
+```json
+{
+  "sub": "1234567890",
+  "name": "Elise",
+  "role": "admin",
+  "iat": 1735900000,
+  "exp": 1735903600
+}
+```
+
+A **signature** é o resultado de assinar `base64url(header) + "." + base64url(payload)` com a chave. É ela que amarra tudo: mude um byte do header ou do payload e a assinatura não confere mais.
+
+<Callout type="warn">
+**O payload NÃO é secreto.** `base64url` é codificação, não criptografia — qualquer um cola o token em [jwt.io](https://jwt.io) e lê tudo. A assinatura garante **integridade** (não foi adulterado) e **autenticidade** (foi você quem emitiu), **nunca sigilo**. Nunca coloque senha, cartão ou dado sensível no payload.
+</Callout>
+
+### Tipos de Claims
+
+<ComparisonTable
+  head={["Claim", "Nome", "Significado"]}
+  rows={[
+    ["<strong style='color:#f472b6'>iss</strong>", "Issuer", "Quem emitiu o token"],
+    ["<strong style='color:#f472b6'>sub</strong>", "Subject", "Dono do token (ex.: id do usuário)"],
+    ["<strong style='color:#f472b6'>aud</strong>", "Audience", "Destinatário pretendido do token"],
+    ["<strong style='color:#f87171'>exp</strong>", "Expiration", "Expira em (Unix time) — sempre valide"],
+    ["<strong style='color:#fbbf24'>nbf</strong>", "Not Before", "Só válido a partir deste instante"],
+    ["<strong style='color:#38bdf8'>iat</strong>", "Issued At", "Emitido em (Unix time)"],
+    ["<strong style='color:#66bb6a'>jti</strong>", "JWT ID", "Id único — anti-replay e revogação"],
+  ]}
+/>
+
+Além dessas **registradas** (padrão RFC), você pode adicionar claims **públicas** (nomes registrados no IANA, ex.: `email`) e **privadas** (combinadas entre as partes, ex.: `role`, `tenant`).
+
+## O Algoritmo por Trás
+
+A mágica é uma só: **assinar** os dois primeiros segmentos e anexar o resultado como terceiro. Como o segmento é sempre `base64url`, o cálculo é determinístico — o validador refaz a conta e compara.
+
+### HMAC (HS256) — Simétrico
+
+A **mesma chave secreta** assina e valida. Rápido e simples, ideal quando o emissor e o validador são o mesmo serviço (ou compartilham o segredo com segurança).
+
+```text
+signature = HMAC-SHA256(
+  base64url(header) + "." + base64url(payload),
+  segredo
+)
+```
+
+<FlowDiagram
+  title="HS256 — UMA CHAVE FAZ TUDO"
+  rows={[
+    { box: "dados = base64url(header) + '.' + base64url(payload)", color: "#38bdf8" },
+    { box: "HMAC-SHA256(dados, segredo)", color: "#f472b6", indent: 1, note: "o mesmo segredo assina e valida" },
+    { box: "= signature", color: "#66bb6a", indent: 2 },
+  ]}
+/>
+
+### RSA / ECDSA (RS256/ES256) — Assimétrico
+
+Duas chaves: o emissor assina com a **privada**, e qualquer um valida com a **pública**. Ninguém consegue forjar um token sem a privada, mas todo mundo pode verificar. Essencial quando **muitos serviços** precisam validar tokens emitidos por um provedor central (OAuth2 / OpenID Connect).
+
+<FlowDiagram
+  title="RS256 — ASSINA COM PRIVADA, VALIDA COM PÚBLICA"
+  rows={[
+    { box: "Emissor assina com a chave PRIVADA", color: "#f87171" },
+    { box: "Token distribuído aos serviços", color: "#38bdf8", indent: 1 },
+    { box: "Cada serviço valida com a chave PÚBLICA", color: "#66bb6a", indent: 2, note: "a privada nunca sai do emissor" },
+  ]}
+/>
+
+<ComparisonTable
+  head={["Algoritmo", "Tipo", "Chaves", "Quando usar"]}
+  rows={[
+    ["<strong style='color:#f472b6'>HS256</strong>", "Simétrico (HMAC-SHA256)", "1 segredo compartilhado", "Monólito — emissor = validador"],
+    ["<strong style='color:#38bdf8'>RS256</strong>", "Assimétrico (RSA-SHA256)", "privada assina / pública valida", "Microsserviços, OAuth/OIDC"],
+    ["<strong style='color:#66bb6a'>ES256</strong>", "Assimétrico (ECDSA P-256)", "privada assina / pública valida", "Igual RS256, chaves menores e rápidas"],
+  ]}
+/>
+
+<Callout type="warn">
+**Ataque `alg: none` e confusão de algoritmo.** O token diz no header qual `alg` usar — mas **nunca confie nesse campo**. Um atacante pode trocar para `none` (sem assinatura) ou fazer um servidor RS256 tratar a chave pública como segredo HMAC. **Fixe o algoritmo esperado na validação** e rejeite qualquer outro.
+</Callout>
+
+## Fluxo de Autenticação
+
+<Pipeline
+  steps={[
+    { label: "🔑 Login", note: "user + senha", kind: "req" },
+    { label: "✅ Valida credenciais", note: "no servidor", kind: "step" },
+    { label: "🎫 Emite JWT", note: "assina com a chave", kind: "step" },
+    { label: "💾 Cliente guarda", note: "cookie httpOnly", kind: "step" },
+    { label: "📨 Envia Bearer", note: "header Authorization", kind: "step" },
+    { label: "🔓 Acesso liberado", note: "valida e responde", kind: "res" },
+  ]}
+  caption="Em cada request o cliente envia 'Authorization: Bearer <token>'. O servidor valida a assinatura — sem consultar banco de sessão."
+/>
+
+## Validação do Token
+
+Validar não é só "conferir a assinatura". Tudo abaixo precisa passar — se qualquer item falhar, o token é rejeitado:
+
+<FlowDiagram
+  title="VALIDAÇÃO — TUDO PRECISA PASSAR"
+  rows={[
+    { box: "1. Assinatura confere?", color: "#f472b6", note: "recalcula com a chave e compara" },
+    { box: "2. exp não passou? nbf já valeu?", color: "#fbbf24", indent: 1, note: "janela de tempo" },
+    { box: "3. iss e aud corretos?", color: "#38bdf8", indent: 2, note: "emitido por quem eu confio, para mim" },
+    { box: "✅ Principal autenticado", color: "#66bb6a", indent: 3 },
+  ]}
+/>
+
+<Callout type="warn">
+**Cuidado com o `ClockSkew`.** As bibliotecas .NET aplicam por padrão **5 minutos** de tolerância no `exp`/`nbf` para compensar relógios dessincronizados. Um token "expirado" pode continuar aceito por 5 min. Reduza (`ClockSkew = TimeSpan.Zero` ou poucos segundos) se precisar de expiração precisa.
+</Callout>
+
+## Implementação em C#
+
+O pacote `System.IdentityModel.Tokens.Jwt` (classe `JwtSecurityTokenHandler`) cria e valida tokens; `Microsoft.IdentityModel.Tokens` traz as chaves e o `TokenValidationParameters`; e `Microsoft.AspNetCore.Authentication.JwtBearer` liga tudo ao pipeline do ASP.NET Core.
+
+### Gerar o Token (HS256)
+
+```csharp
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+
+public string GerarToken(string userId, string nome, string role)
+{
+    // A chave HMAC precisa de >= 256 bits (32 bytes) para HS256
+    var segredo = "sua-chave-super-secreta-com-no-minimo-256-bits!!";
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(segredo));
+    var credenciais = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+    var claims = new[]
+    {
+        new Claim(JwtRegisteredClaimNames.Sub, userId),
+        new Claim(JwtRegisteredClaimNames.Name, nome),
+        new Claim(ClaimTypes.Role, role),
+        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()), // id único
+    };
+
+    var token = new JwtSecurityToken(
+        issuer: "meu-app",
+        audience: "meu-app-clientes",
+        claims: claims,
+        notBefore: DateTime.UtcNow,
+        expires: DateTime.UtcNow.AddMinutes(15), // expiração curta!
+        signingCredentials: credenciais);
+
+    return new JwtSecurityTokenHandler().WriteToken(token);
+}
+```
+
+### Validar o Token
+
+```csharp
+public ClaimsPrincipal? ValidarToken(string token, string segredo)
+{
+    var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(segredo));
+
+    var parametros = new TokenValidationParameters
+    {
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = key,
+        ValidateIssuer = true,
+        ValidIssuer = "meu-app",
+        ValidateAudience = true,
+        ValidAudience = "meu-app-clientes",
+        ValidateLifetime = true,
+        ClockSkew = TimeSpan.FromSeconds(30), // tolerância mínima de relógio
+    };
+
+    try
+    {
+        var handler = new JwtSecurityTokenHandler();
+        var principal = handler.ValidateToken(token, parametros, out SecurityToken validado);
+
+        // Trava o algoritmo esperado — bloqueia 'alg: none' e confusão HS/RS
+        if (validado is not JwtSecurityToken jwt ||
+            !jwt.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return principal; // token válido — claims prontas para uso
+    }
+    catch
+    {
+        // assinatura inválida, expirado, issuer/audience errados...
+        return null;
+    }
+}
+```
+
+### Configurar no ASP.NET Core (JwtBearer)
+
+Na prática você raramente chama `ValidateToken` na mão — o middleware `JwtBearer` faz isso em toda request e popula `HttpContext.User`:
+
+```csharp
+using System.Text;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.IdentityModel.Tokens;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Secret"]!)),
+            ValidateIssuer = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidateAudience = true,
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero, // sem tolerância além do exp
+        };
+    });
+
+builder.Services.AddAuthorization();
+
+var app = builder.Build();
+
+app.UseAuthentication(); // valida o Bearer e monta o User
+app.UseAuthorization();  // aplica [Authorize] / RequireAuthorization
+
+app.MapGet("/publico", () => "aberto a todos");
+app.MapGet("/privado", () => "somente autenticados").RequireAuthorization();
+
+app.Run();
+```
+
+<Callout type="info">
+**A ordem importa.** `UseAuthentication()` **antes** de `UseAuthorization()`. O primeiro descobre *quem* você é (valida o token e monta o `ClaimsPrincipal`); o segundo decide *o que* você pode fazer. Inverter a ordem quebra `[Authorize]`.
+</Callout>
+
+### Assinatura Assimétrica (RS256)
+
+Quando vários serviços validam tokens de um provedor central, use chaves RSA — a privada fica só no emissor, a pública é distribuída:
+
+```csharp
+using System.Security.Cryptography;
+using Microsoft.IdentityModel.Tokens;
+
+// EMISSOR — assina com a chave privada
+var rsaPrivada = RSA.Create();
+rsaPrivada.ImportFromPem(File.ReadAllText("private-key.pem"));
+var credenciais = new SigningCredentials(
+    new RsaSecurityKey(rsaPrivada),
+    SecurityAlgorithms.RsaSha256); // RS256
+// ... cria o JwtSecurityToken com 'credenciais' (igual ao HS256)
+
+// VALIDADOR — verifica com a chave pública
+var rsaPublica = RSA.Create();
+rsaPublica.ImportFromPem(File.ReadAllText("public-key.pem"));
+var parametros = new TokenValidationParameters
+{
+    ValidateIssuerSigningKey = true,
+    IssuerSigningKey = new RsaSecurityKey(rsaPublica), // só a pública valida
+    ValidateIssuer = true,
+    ValidIssuer = "meu-app",
+    ValidateAudience = true,
+    ValidAudience = "meu-app-clientes",
+    ValidateLifetime = true,
+};
+```
+
+<Callout type="tip">
+**Em produção, prefira JWKS.** Provedores OIDC (Azure AD, Auth0, Keycloak) publicam as chaves públicas num endpoint `/.well-known/jwks.json`. O `JwtBearer` baixa e rotaciona essas chaves sozinho quando você configura a `Authority` — você não gerencia PEM na mão.
+</Callout>
+
+## Boas Práticas e Armadilhas
+
+<CardGrid cols={2}>
+  <Card accent="#f87171" title="Expiração curta + refresh">
+    Access token de 5–15 min. Se vazar, a janela de dano é pequena. Renove com um refresh token de vida longa.
+  </Card>
+  <Card accent="#fbbf24" title="Payload é público">
+    `base64url`, não criptografia. Nunca coloque segredos no payload — qualquer um lê.
+  </Card>
+  <Card accent="#f472b6" title="Fixe o algoritmo">
+    Valide apenas o `alg` esperado. Bloqueia `alg: none` e a confusão HS/RS.
+  </Card>
+  <Card accent="#38bdf8" title="HTTPS sempre">
+    O token vai no header/cookie. Sem TLS, ele vaza em texto puro no trânsito.
+  </Card>
+  <Card accent="#66bb6a" title="Storage seguro">
+    Cookie `httpOnly` protege contra XSS. Evite `localStorage` para tokens sensíveis.
+  </Card>
+  <Card accent="#a78bfa" title="Revogação é o calcanhar">
+    JWT é stateless: um token válido vale até expirar. Para logout real, use expiry curto + blacklist de `jti`.
+  </Card>
+</CardGrid>
+
+## Refresh Tokens
+
+O dilema: token curto é seguro mas obriga login constante; token longo é cômodo mas perigoso se vazar. A solução é o par **access + refresh**.
+
+<Pipeline
+  steps={[
+    { label: "⏰ Access expira", note: "servidor responde 401", kind: "req" },
+    { label: "🔄 POST /refresh", note: "envia o refresh token", kind: "step" },
+    { label: "✅ Valida e rotaciona", note: "servidor confere no banco", kind: "step" },
+    { label: "🎫 Novo access (+refresh)", note: "rotação de refresh", kind: "res" },
+  ]}
+  caption="O refresh token trafega só no endpoint de renovação — nunca em cada request como o access."
+/>
+
+<ComparisonTable
+  head={["Aspecto", "Access Token", "Refresh Token"]}
+  rows={[
+    ["<strong>Vida</strong>", "Curta (5–15 min)", "Longa (dias/semanas)"],
+    ["<strong>Onde trafega</strong>", "Toda request (<code>Bearer</code>)", "Só no endpoint <code>/refresh</code>"],
+    ["<strong>Formato</strong>", "JWT autocontido", "JWT ou opaco (guardado no banco)"],
+    ["<strong>Se vazar</strong>", "<strong style='color:#66bb6a'>Dano limitado</strong> — expira logo", "<strong style='color:#f87171'>Grave</strong> — precisa revogação"],
+  ]}
+/>
+
+<Callout type="tip">
+**Rotação de refresh.** A cada renovação, invalide o refresh antigo e emita um novo. Se um refresh já usado reaparecer, é sinal de roubo — revogue toda a família de tokens daquele usuário.
+</Callout>
