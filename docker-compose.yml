@@ -1,0 +1,13 @@
+services:
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mendez-tech-hub
+    container_name: mendez-tech-hub
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1

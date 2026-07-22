@@ -1,0 +1,10 @@
+# keep the build context small; content/ + frontend source stay in.
+**/node_modules
+**/.next
+.git
+.superpowers
+.claude
+docs
+**/*.log
+**/.DS_Store
+**/coverage
