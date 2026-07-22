@@ -1,0 +1,208 @@
+---
+title: "Case 1 — Planilha de 1M linhas em 20 min"
+slug: case-planilha-1m
+category: infra
+parent: system-design
+icon: "🗂️"
+accent: "#f87171"
+description: "Processar uma planilha de 1.000.000 de linhas em ≤20min: upload por portal (S3 presigned), fila SQS, worker ECS Fargate, bulk insert no Aurora e teste de carga comprovando o SLA."
+tags: [AWS, S3, SQS, Fargate, k6]
+order: 50
+updated: 2026-07-22
+---
+
+Aplicando os conceitos de System Design num problema real de processamento em lote na AWS. Passe o mouse nas caixas dos diagramas para ver o comentário de cada ponto.
+
+## O problema
+
+O usuário sobe uma planilha (CSV/XLSX) por um portal. O serviço precisa processar **1.000.000 de linhas**, validar, **persistir no banco** e liberar a **consulta** das linhas cadastradas — tudo em **até 20 minutos**, com **testes comprovando** o SLA. Pontos sensíveis: como **receber/gravar** um arquivo grande sem derrubar o servidor, e como **ler** sem estourar a memória.
+
+## Orçamento de tempo — por que 20min é folgado
+
+1.000.000 linhas em 1.200s exigem só **~833 linhas/s**. Parsing em streaming faz dezenas de milhares por segundo; `bulk insert` faz 50k–100k/s. Um único worker resolve em **~2–5 min** — os 20min são margem enorme; paralelismo vira segurança, não necessidade.
+
+<ComparisonTable
+  head={["Etapa", "Vazão típica", "Tempo p/ 1M linhas"]}
+  rows={[
+    ["Exigido pelo SLA", "833 linhas/s", "20 min (teto)"],
+    ["Parse streaming", "20k–50k linhas/s", "~20–50 s"],
+    ["<strong style='color:#66bb6a'>Bulk insert (COPY)</strong>", "50k–100k linhas/s", "~10–20 s"],
+    ["INSERT linha-a-linha", "~500 linhas/s", "<strong style='color:#f87171'>~33 min (estoura!)</strong>"],
+  ]}
+/>
+
+<Callout type="warn">
+**Nunca passe o arquivo grande pelo app server.** Gravar 100+ MB no disco/memória da API é o erro clássico — OOM, disco cheio, timeout de upload. Na AWS o arquivo vai **direto pro S3** via **presigned URL**: o portal pede uma URL assinada à API, e o **browser** sobe o arquivo direto no S3. O app nunca toca o binário.
+</Callout>
+
+## Arquitetura AWS — do upload à consulta
+
+Pipeline event-driven e desacoplado. Cada caixa tem um comentário no hover:
+
+<FlowDiagram
+  title="PIPELINE — EVENT-DRIVEN, DESACOPLADO"
+  rows={[
+    { box: "Portal (browser)", color: "#38bdf8", tip: "Pede a presigned URL a API, depois faz o PUT do arquivo direto no S3" },
+    { box: "API — gera presigned URL", color: "#a78bfa", indent: 1, tip: "So assina a URL do S3. Nunca recebe o binario grande" },
+    { box: "S3 (bucket de uploads)", color: "#fb923c", indent: 2, tip: "Aguenta GBs. PUT direto do browser, multipart para arquivos grandes" },
+    { box: "S3 Event -> EventBridge", color: "#fbbf24", indent: 3, tip: "ObjectCreated dispara o job automaticamente, sem polling" },
+    { box: "SQS (fila de jobs)", color: "#f472b6", indent: 4, tip: "Desacopla upload de processamento. Absorve picos, at-least-once, DLQ" },
+    { box: "Worker (ECS Fargate)", color: "#66bb6a", indent: 5, tip: "Consome a fila. Fargate roda >15min (limite do Lambda), escala por tarefa" },
+    { box: "Aurora / RDS", color: "#f87171", indent: 6, tip: "Persiste as linhas via bulk COPY. Indexado para consulta paginada depois" },
+  ]}
+/>
+
+## Fluxo do upload
+
+O binário nunca cruza a API:
+
+<Pipeline
+  steps={[
+    { label: "Portal", note: "escolhe o arquivo", kind: "req", tip: "Antes de subir, pede a URL assinada" },
+    { label: "API", note: "presigned URL", kind: "step", tip: "GetPreSignedURL do S3, valida 15min. Nao recebe bytes" },
+    { label: "S3 PUT", note: "direto do browser", kind: "step", tip: "Multipart: o SDK fatia o arquivo, resiliente a falha de rede" },
+    { label: "S3 Event", note: "ObjectCreated", kind: "step", tip: "Notificacao dispara o job sem ninguem perguntar" },
+    { label: "SQS", note: "job na fila", kind: "res", tip: "Mensagem = jobId + bucket + key. Worker pega quando puder" },
+  ]}
+  caption="O app server nunca segura o arquivo — só assina a URL e reage ao evento."
+/>
+
+## Processamento no worker — memória constante
+
+Lê o S3 como stream, processa em lotes e descarta cada lote:
+
+<FlowDiagram
+  title="WORKER — STREAM + LOTE + BULK INSERT"
+  rows={[
+    { box: "Recebe msg da SQS", color: "#f472b6", tip: "jobId + key do arquivo no S3. Marca o job como 'processing'" },
+    { box: "Abre stream do S3", color: "#fb923c", indent: 1, tip: "GetObject como Stream — NAO baixa o arquivo inteiro" },
+    { box: "Parse por lote (10k)", color: "#38bdf8", indent: 2, tip: "CsvReader linha a linha; acumula 10k, valida, depois solta" },
+    { box: "Bulk insert (COPY)", color: "#66bb6a", indent: 3, tip: "10k linhas de uma vez no Aurora. Nunca INSERT 1 a 1" },
+    { box: "Atualiza progresso", color: "#a78bfa", indent: 4, tip: "linhas_processadas += 10k. Portal faz polling desse status" },
+    { box: "Ack na SQS", color: "#fbbf24", indent: 5, tip: "So no fim. Se o worker morre antes, a msg volta pra fila (visibility timeout)" },
+  ]}
+/>
+
+<Callout type="info">
+**Fargate, não Lambda.** O AWS Lambda tem teto de **15 min** de execução — o SLA é 20 min. Rode o worker em **ECS Fargate** (roda o tempo que precisar). Se quiser Lambda, **particione** o arquivo (Step Functions Map) em pedaços que rodem em &lt; 15 min cada, em paralelo.
+</Callout>
+
+## Gravar e ler o arquivo grande
+
+Os cuidados que o problema pede:
+
+<CardGrid cols={2}>
+  <Card accent="#fb923c" title="Gravar: direto no S3">
+    Presigned URL + <strong>multipart upload</strong> (o SDK fatia em partes, retoma parte que falhou). O app server nunca segura o binário — zero risco de OOM/disco.
+  </Card>
+  <Card accent="#38bdf8" title="Ler: streaming, nunca tudo na RAM">
+    <code>GetObject</code> como <code>Stream</code> + <code>StreamReader</code>/<code>CsvReader</code> linha a linha. NUNCA <code>ReadAllText</code>/<code>ReadAllLines</code> — carregar 100+ MB na heap = OOM.
+  </Card>
+  <Card accent="#66bb6a" title="Inserir: em lote (bulk)">
+    Postgres <code>COPY</code> / <code>SqlBulkCopy</code>, lotes de 5–10k. INSERT linha-a-linha são 1M round-trips = dezenas de minutos.
+  </Card>
+  <Card accent="#f472b6" title="Idempotência">
+    SQS entrega <strong>at-least-once</strong>. Use <code>jobId</code> + upsert/dedup para reprocesso não duplicar linhas.
+  </Card>
+</CardGrid>
+
+## Código
+
+A API só assina a URL; o browser faz o PUT direto no S3:
+
+```csharp
+// API: gera a URL assinada; o browser faz o PUT direto no S3
+var req = new GetPreSignedUrlRequest
+{
+    BucketName = "uploads-planilhas",
+    Key = $"jobs/{jobId}/{fileName}",
+    Verb = HttpVerb.PUT,
+    Expires = DateTime.UtcNow.AddMinutes(15),
+};
+string url = s3.GetPreSignedURL(req); // devolve pro portal — o app nao ve os bytes
+```
+
+O worker lê o S3 como stream e insere em lotes — a memória não cresce com o arquivo:
+
+```csharp
+// Worker: le o S3 como STREAM e insere em lotes — memoria nao cresce com o arquivo
+using var resp = await s3.GetObjectAsync("uploads-planilhas", key);
+using var reader = new StreamReader(resp.ResponseStream);
+using var csv = new CsvReader(reader, CultureInfo.InvariantCulture);
+
+const int BATCH = 10_000;
+var buffer = new List<Linha>(BATCH);
+
+await foreach (var linha in csv.GetRecordsAsync<Linha>())
+{
+    buffer.Add(Validar(linha));
+    if (buffer.Count >= BATCH)
+    {
+        await BulkInsertAsync(buffer);          // COPY / SqlBulkCopy
+        await AtualizarProgresso(jobId, BATCH);
+        buffer.Clear();                          // solta o lote — nunca segura 1M na RAM
+    }
+}
+if (buffer.Count > 0) await BulkInsertAsync(buffer);
+```
+
+## Comprovando o SLA — teste de carga (k6)
+
+Gera a planilha de 1M linhas, roda o fluxo ponta a ponta e falha se passar de 20min:
+
+```javascript
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  scenarios: { um_arquivo: { executor: "shared-iterations", vus: 1, iterations: 1, maxDuration: "25m" } },
+  thresholds: { iteration_duration: ["p(95)<1200000"] }, // 1.200.000 ms = 20 min
+};
+
+export default function () {
+  const jobId = subirPlanilha1M();              // presigned PUT de 1M linhas no S3
+  const inicio = Date.now();
+  let status = "processing";
+  while (status === "processing") {
+    const r = http.get(`https://api.exemplo.com/jobs/${jobId}`);
+    status = r.json("status");
+    check(r, { "sem erro": (x) => x.status === 200 });
+    if (Date.now() - inicio > 20 * 60 * 1000) break; // guarda dura de 20min
+    sleep(5);
+  }
+  check(status, { "processou em ate 20min": (s) => s === "done" });
+}
+```
+
+<Callout type="tip">
+**Prove em 3 níveis.** *Unitário* no parser/validador (Vitest/xUnit). *Integração* com Testcontainers (Postgres real) medindo o tempo do bulk insert de 1M linhas. *Carga* k6 ponta a ponta com o threshold de 20min acima — esse é o que vale como prova do SLA no CI.
+</Callout>
+
+## Consultar depois (linhas cadastradas)
+
+<Pipeline
+  steps={[
+    { label: "Portal", note: "abre o job", kind: "req", tip: "Job ja esta 'done' — linhas persistidas e indexadas" },
+    { label: "API", note: "/jobs/{id}/linhas", kind: "step", tip: "Paginacao por keyset/cursor, nao OFFSET grande (lento em 1M)" },
+    { label: "Aurora", note: "query indexada", kind: "step", tip: "Indice na coluna de busca + paginacao = resposta em ms" },
+    { label: "Resposta", note: "pagina de linhas", kind: "res", tip: "Portal renderiza e pagina conforme o usuario rola" },
+  ]}
+/>
+
+## Serviços AWS no case
+
+<ComparisonTable
+  head={["Serviço", "Papel", "Por quê"]}
+  rows={[
+    ["<strong style='color:#fb923c'>S3</strong>", "Armazena a planilha", "Aguenta GBs, upload direto (presigned + multipart), barato"],
+    ["<strong style='color:#fbbf24'>EventBridge / S3 Notif</strong>", "Dispara o job no upload", "Event-driven — ninguém fica perguntando se chegou"],
+    ["<strong style='color:#f472b6'>SQS</strong>", "Fila de jobs", "Desacopla, absorve pico, retry + DLQ, at-least-once"],
+    ["<strong style='color:#66bb6a'>ECS Fargate</strong>", "Worker de processamento", "Sem teto de 15min do Lambda; escala por tarefa"],
+    ["<strong style='color:#f87171'>Aurora / RDS</strong>", "Persiste e consulta", "Bulk COPY na escrita; índice + paginação na leitura"],
+    ["<strong style='color:#38bdf8'>CloudWatch</strong>", "Métricas, logs, alarme", "Observabilidade do job (duração, falhas, tamanho da fila)"],
+  ]}
+/>
+
+<Callout type="warn">
+**Resiliência do job.** Fila com **DLQ** para o que falha; **retry com backoff**; **idempotência** por `jobId`; status persistido para **retomar** de onde parou. Se o worker morre no meio, a mensagem volta pra fila (visibility timeout) e outro worker reprocessa — sem intervenção humana.
+</Callout>

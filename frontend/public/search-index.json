@@ -701,7 +701,7 @@
     "category": "infra",
     "section": "Cases de System Design",
     "anchor": "cases-de-system-design",
-    "text": "Cases aplicando os conceitos em problemas reais: requisitos, arquitetura, diagramas (passe o mouse nas caixas para ver o comentário de cada ponto) e como comprovar o SLA com teste. Case 1 — Processar planilha de 1M linhas em ate 20min O problema. O usuário sobe uma planilha (CSV/XLSX) por um portal. O serviço precisa processar 1.000.000 de linhas , validar, persistir no banco e liberar a consulta das linhas cadastradas — tudo em até 20 minutos , com testes comprovando o SLA. Pontos sensíveis: como receber/gravar um arquivo grande sem derrubar o servidor, e como ler sem estourar a memória. Orçamento de tempo — por que 20min é folgado. 1.000.000 linhas em 1.200s exigem só ~833 linhas/s . Parsing em streaming faz dezenas de milhares por segundo; bulk insert faz 50k–100k/s. Um único worker resolve em ~2–5 min — os 20min são margem enorme; paralelismo vira segurança, não necessidade. Bulk insert (COPY) \", \"50k–100k linhas/s\", \"~10–20 s\"], [\"INSERT linha a linha\", \"~500 linhas/s\", \" ~33 min (estoura!) \"], ]} / Nunca passe o arquivo grande pelo app server. Gravar 100+ MB no disco/memória da API é o erro clássico — OOM, disco cheio, timeout de upload. Na AWS o arquivo vai direto pro S3 via presigned URL : o portal pede uma URL assinada à API, e o browser sobe o arquivo direto no S3. O app nunca toca o binário. Arquitetura AWS — do upload à consulta. Cada caixa tem um comentário no hover: EventBridge\", color: \" fbbf24\", indent: 3, tip: \"ObjectCreated dispara o job automaticamente, sem polling\" }, { box: \"SQS (fila de jobs)\", color: \" f472b6\", indent: 4, tip: \"Desacopla upload de processamento. Absorve picos, at least once, DLQ\" }, { box: \"Worker (ECS Fargate)\", color: \" 66bb6a\", indent: 5, tip: \"Consome a fila. Fargate roda 15min (limite do Lambda), escala por tarefa\" }, { box: \"Aurora / RDS\", color: \" f87171\", indent: 6, tip: \"Persiste as linhas via bulk COPY. Indexado para consulta paginada depois\" }, ]} / Fluxo do upload. O binário nunca cruza a API: Processamento no worker — memória constante. Lê o S3 como stream, processa em lotes e descarta cada lote: Fargate, não Lambda. O AWS Lambda tem teto de 15 min de execução — o SLA é 20 min. Rode o worker em ECS Fargate (roda o tempo que precisar). Se quiser Lambda, particione o arquivo (Step Functions Map) em pedaços que rodem em &lt; 15 min cada, em paralelo. Gravar e ler o arquivo grande — os cuidados que o problema pede: Presigned URL + multipart upload (o SDK fatia em partes, retoma parte que falhou). O app server nunca segura o binário — zero risco de OOM/disco. GetObject como Stream + StreamReader / CsvReader linha a linha. NUNCA ReadAllText / ReadAllLines — carregar 100+ MB na heap = OOM. Postgres COPY / SqlBulkCopy , lotes de 5–10k. INSERT linha a linha são 1M round trips = dezenas de minutos. SQS entrega at least once . Use jobId + upsert/dedup para reprocesso não duplicar linhas. Código — presigned URL (a API só assina): csharp // API: gera a URL assinada; o browser faz o PUT direto no S3 var req = new GetPreSignedUrlRequest { BucketName = \"uploads planilhas\", Key = $\"jobs/{jobId}/{fileName}\", Verb = HttpVerb.PUT, Expires = DateTime.UtcNow.AddMinutes(15), }; string url = s3.GetPreSignedURL(req); // devolve pro portal — o app nao ve os bytes Código — leitura em streaming + bulk insert (memória constante): csharp // Worker: le o S3 como STREAM e insere em lotes — memoria nao cresce com o arquivo using var resp = await s3.GetObjectAsync(\"uploads planilhas\", key); using var reader = new StreamReader(resp.ResponseStream); using var csv = new CsvReader(reader, CultureInfo.InvariantCulture); const int BATCH = 10 000; var buffer = new List (BATCH); await foreach (var linha in csv.GetRecordsAsync ()) { buffer.Add(Validar(linha)); if (buffer.Count = BATCH) { await BulkInsertAsync(buffer); // COPY / SqlBulkCopy await AtualizarProgresso(jobId, BATCH); buffer.Clear(); // solta o lote — nunca segura 1M na RAM } } if (buffer.Count 0) await BulkInsertAsync(buffer); Comprovando o SLA — teste de carga (k6): gera a planilha de 1M linhas, roda o fluxo ponta a ponta e falha se passar de 20min. javascript import http from \"k6/http\"; import { check, sleep } from \"k6\"; export const options = { scenarios: { um arquivo: { executor: \"shared iterations\", vus: 1, iterations: 1, maxDuration: \"25m\" } }, thresholds: { iteration duration: [\"p(95) x.status === 200 }); if (Date.now() inicio 20 60 1000) break; // guarda dura de 20min sleep(5); } check(status, { \"processou em ate 20min\": (s) = s === \"done\" }); } Prove em 3 níveis. Unitário no parser/validador (Vitest/xUnit). Integração com Testcontainers (Postgres real) medindo o tempo do bulk insert de 1M linhas. Carga k6 ponta a ponta com o threshold de 20min acima — esse é o que vale como prova do SLA no CI. Consultar depois (linhas cadastradas): Serviços AWS no case: S3 \", \"Armazena a planilha\", \"Aguenta GBs, upload direto (presigned + multipart), barato\"], [\" EventBridge / S3 Notif \", \"Dispara o job no upload\", \"Event driven — ninguém fica perguntando se chegou\"], [\" SQS \", \"Fila de jobs\", \"Desacopla, absorve pico, retry + DLQ, at least once\"], [\" ECS Fargate \", \"Worker de processamento\", \"Sem teto de 15min do Lambda; escala por tarefa\"], [\" Aurora / RDS \", \"Persiste e consulta\", \"Bulk COPY na escrita; índice + paginação na leitura\"], [\" CloudWatch \", \"Métricas, logs, alarme\", \"Observabilidade do job (duração, falhas, tamanho da fila)\"], ]} / Resiliência do job. Fila com DLQ para o que falha; retry com backoff ; idempotência por jobId ; status persistido para retomar de onde parou. Se o worker morre no meio, a mensagem volta pra fila (visibility timeout) e outro worker reprocessa — sem intervenção humana.",
+    "text": "Cases aplicando os conceitos acima em problemas reais — requisitos, arquitetura, diagramas (com comentário no hover) e como comprovar o SLA com teste. Cada case tem a sua própria página : Portal sobe uma planilha, o serviço processa 1.000.000 de linhas, persiste no banco e libera a consulta — tudo em ≤20min, com teste de carga comprovando o SLA. S3 presigned + SQS + ECS Fargate + Aurora. [Abrir o case →](/concepts/case planilha 1m)",
     "tags": [
       "Load Balancer",
       "CAP",
@@ -2038,6 +2038,182 @@
       "Error Tracking",
       "APM",
       "Releases"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#_",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Case 1 — Planilha de 1M linhas em 20 min",
+    "anchor": "",
+    "text": "Aplicando os conceitos de System Design num problema real de processamento em lote na AWS. Passe o mouse nas caixas dos diagramas para ver o comentário de cada ponto.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#o-problema",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "O problema",
+    "anchor": "o-problema",
+    "text": "O usuário sobe uma planilha (CSV/XLSX) por um portal. O serviço precisa processar 1.000.000 de linhas , validar, persistir no banco e liberar a consulta das linhas cadastradas — tudo em até 20 minutos , com testes comprovando o SLA. Pontos sensíveis: como receber/gravar um arquivo grande sem derrubar o servidor, e como ler sem estourar a memória.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#orcamento-de-tempo-por-que-20min-e-folgado",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Orçamento de tempo — por que 20min é folgado",
+    "anchor": "orcamento-de-tempo-por-que-20min-e-folgado",
+    "text": "1.000.000 linhas em 1.200s exigem só ~833 linhas/s . Parsing em streaming faz dezenas de milhares por segundo; bulk insert faz 50k–100k/s. Um único worker resolve em ~2–5 min — os 20min são margem enorme; paralelismo vira segurança, não necessidade. Bulk insert (COPY) \", \"50k–100k linhas/s\", \"~10–20 s\"], [\"INSERT linha a linha\", \"~500 linhas/s\", \" ~33 min (estoura!) \"], ]} / Nunca passe o arquivo grande pelo app server. Gravar 100+ MB no disco/memória da API é o erro clássico — OOM, disco cheio, timeout de upload. Na AWS o arquivo vai direto pro S3 via presigned URL : o portal pede uma URL assinada à API, e o browser sobe o arquivo direto no S3. O app nunca toca o binário.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#arquitetura-aws-do-upload-a-consulta",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Arquitetura AWS — do upload à consulta",
+    "anchor": "arquitetura-aws-do-upload-a-consulta",
+    "text": "Pipeline event driven e desacoplado. Cada caixa tem um comentário no hover: EventBridge\", color: \" fbbf24\", indent: 3, tip: \"ObjectCreated dispara o job automaticamente, sem polling\" }, { box: \"SQS (fila de jobs)\", color: \" f472b6\", indent: 4, tip: \"Desacopla upload de processamento. Absorve picos, at least once, DLQ\" }, { box: \"Worker (ECS Fargate)\", color: \" 66bb6a\", indent: 5, tip: \"Consome a fila. Fargate roda 15min (limite do Lambda), escala por tarefa\" }, { box: \"Aurora / RDS\", color: \" f87171\", indent: 6, tip: \"Persiste as linhas via bulk COPY. Indexado para consulta paginada depois\" }, ]} /",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#fluxo-do-upload",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Fluxo do upload",
+    "anchor": "fluxo-do-upload",
+    "text": "O binário nunca cruza a API:",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#processamento-no-worker-memoria-constante",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Processamento no worker — memória constante",
+    "anchor": "processamento-no-worker-memoria-constante",
+    "text": "Lê o S3 como stream, processa em lotes e descarta cada lote: Fargate, não Lambda. O AWS Lambda tem teto de 15 min de execução — o SLA é 20 min. Rode o worker em ECS Fargate (roda o tempo que precisar). Se quiser Lambda, particione o arquivo (Step Functions Map) em pedaços que rodem em &lt; 15 min cada, em paralelo.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#gravar-e-ler-o-arquivo-grande",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Gravar e ler o arquivo grande",
+    "anchor": "gravar-e-ler-o-arquivo-grande",
+    "text": "Os cuidados que o problema pede: Presigned URL + multipart upload (o SDK fatia em partes, retoma parte que falhou). O app server nunca segura o binário — zero risco de OOM/disco. GetObject como Stream + StreamReader / CsvReader linha a linha. NUNCA ReadAllText / ReadAllLines — carregar 100+ MB na heap = OOM. Postgres COPY / SqlBulkCopy , lotes de 5–10k. INSERT linha a linha são 1M round trips = dezenas de minutos. SQS entrega at least once . Use jobId + upsert/dedup para reprocesso não duplicar linhas.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#codigo",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Código",
+    "anchor": "codigo",
+    "text": "A API só assina a URL; o browser faz o PUT direto no S3: csharp // API: gera a URL assinada; o browser faz o PUT direto no S3 var req = new GetPreSignedUrlRequest { BucketName = \"uploads planilhas\", Key = $\"jobs/{jobId}/{fileName}\", Verb = HttpVerb.PUT, Expires = DateTime.UtcNow.AddMinutes(15), }; string url = s3.GetPreSignedURL(req); // devolve pro portal — o app nao ve os bytes O worker lê o S3 como stream e insere em lotes — a memória não cresce com o arquivo: csharp // Worker: le o S3 como STREAM e insere em lotes — memoria nao cresce com o arquivo using var resp = await s3.GetObjectAsync(\"uploads planilhas\", key); using var reader = new StreamReader(resp.ResponseStream); using var csv = new CsvReader(reader, CultureInfo.InvariantCulture); const int BATCH = 10 000; var buffer = new List (BATCH); await foreach (var linha in csv.GetRecordsAsync ()) { buffer.Add(Validar(linha)); if (buffer.Count = BATCH) { await BulkInsertAsync(buffer); // COPY / SqlBulkCopy await AtualizarProgresso(jobId, BATCH); buffer.Clear(); // solta o lote — nunca segura 1M na RAM } } if (buffer.Count 0) await BulkInsertAsync(buffer);",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#comprovando-o-sla-teste-de-carga-k6",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Comprovando o SLA — teste de carga (k6)",
+    "anchor": "comprovando-o-sla-teste-de-carga-k6",
+    "text": "Gera a planilha de 1M linhas, roda o fluxo ponta a ponta e falha se passar de 20min: javascript import http from \"k6/http\"; import { check, sleep } from \"k6\"; export const options = { scenarios: { um arquivo: { executor: \"shared iterations\", vus: 1, iterations: 1, maxDuration: \"25m\" } }, thresholds: { iteration duration: [\"p(95) x.status === 200 }); if (Date.now() inicio 20 60 1000) break; // guarda dura de 20min sleep(5); } check(status, { \"processou em ate 20min\": (s) = s === \"done\" }); } Prove em 3 níveis. Unitário no parser/validador (Vitest/xUnit). Integração com Testcontainers (Postgres real) medindo o tempo do bulk insert de 1M linhas. Carga k6 ponta a ponta com o threshold de 20min acima — esse é o que vale como prova do SLA no CI.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#consultar-depois-linhas-cadastradas",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Consultar depois (linhas cadastradas)",
+    "anchor": "consultar-depois-linhas-cadastradas",
+    "text": "",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
+    "id": "case-planilha-1m#servicos-aws-no-case",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Serviços AWS no case",
+    "anchor": "servicos-aws-no-case",
+    "text": "S3 \", \"Armazena a planilha\", \"Aguenta GBs, upload direto (presigned + multipart), barato\"], [\" EventBridge / S3 Notif \", \"Dispara o job no upload\", \"Event driven — ninguém fica perguntando se chegou\"], [\" SQS \", \"Fila de jobs\", \"Desacopla, absorve pico, retry + DLQ, at least once\"], [\" ECS Fargate \", \"Worker de processamento\", \"Sem teto de 15min do Lambda; escala por tarefa\"], [\" Aurora / RDS \", \"Persiste e consulta\", \"Bulk COPY na escrita; índice + paginação na leitura\"], [\" CloudWatch \", \"Métricas, logs, alarme\", \"Observabilidade do job (duração, falhas, tamanho da fila)\"], ]} / Resiliência do job. Fila com DLQ para o que falha; retry com backoff ; idempotência por jobId ; status persistido para retomar de onde parou. Se o worker morre no meio, a mensagem volta pra fila (visibility timeout) e outro worker reprocessa — sem intervenção humana.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
     ]
   }
 ]

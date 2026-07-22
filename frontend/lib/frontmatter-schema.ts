@@ -13,6 +13,10 @@ export const CATEGORY_LABELS: Record<Category, string> = {
 export const frontmatterSchema = z.object({
   title: z.string().min(1),
   slug: z.string().regex(/^[a-z0-9-]+$/),
+  // Optional parent module slug. When set, this module is a CHILD: it nests as a mini-card
+  // inside its parent's card on the landing grid and is indented under the parent in the
+  // sidebar, instead of getting its own top-level card. Its /concepts/<slug> page is unchanged.
+  parent: z.string().regex(/^[a-z0-9-]+$/).optional(),
   category: z.enum(CATEGORIES),
   icon: z.string().min(1),
   accent: z.string().regex(/^#([0-9a-fA-F]{6})$/),
