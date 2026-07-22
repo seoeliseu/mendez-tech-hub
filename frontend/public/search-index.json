@@ -693,5 +693,110 @@
       "Cache",
       "CDN"
     ]
+  },
+  {
+    "id": "banco-escala#_",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Banco de Dados & Escala",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#vertical-vs-horizontal-scaling",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Vertical vs Horizontal Scaling",
+    "anchor": "vertical-vs-horizontal-scaling",
+    "text": "Primeiro passo ao planejar escala de banco: entender o trade off entre crescer a máquina ou crescer o número de máquinas. Aumenta CPU, RAM, disco na mesma máquina. Simples — sem mudanças de código Sem latência de rede entre shards Sem complexidade de distribuição Limite físico de hardware (teto) Downtime para upgrade de hardware Ponto único de falha Caro — hardware premium tem custo exponencial Adiciona mais nós/servidores ao cluster. Escala sem limite teórico Alta disponibilidade com redundância Commodity hardware (mais barato) Complexidade distribuída Necessita sharding/particionamento Latência de rede entre nós Consistência distribuída mais difícil Estratégia típica: comece com scale up (mais simples) até o custo marginal superar scale out. Maioria dos sistemas aguenta décadas com um único postgres bem configurado + read replicas. Gargalos de Performance — Diagnosticar Antes de Escalar Full table scan de 1M rows. Adicionar índice pode ser 1000x mais eficiente que escalar hardware. 1 query + N queries em loop. ORM mal configurado. Use eager loading / JOIN. Transactions longas bloqueando rows. Otimizar tamanho de transação e isolamento. Sem connection pool. Cada request abre nova conexão. Configure PgBouncer ou HikariCP. Normalização excessiva causa joins caros. Denormalize dados de leitura frequente. Queries idênticas batendo no DB. Camada Redis/Memcached pode eliminar 80% da carga. Ordem de Otimização (custo vs impacto)",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#replicacao",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Replicação",
+    "anchor": "replicacao",
+    "text": "Mantém cópias dos dados em múltiplos servidores para alta disponibilidade, disaster recovery e leitura distribuída. Master Slave (Primary Replica) PRIMARY → REPLICA 1, REPLICA 2, REPLICA 3 via WAL / Binlog stream. Síncrono vs Assíncrono Write confirmado \", \"Após commit em primary + pelo menos 1 replica\", \"Após commit apenas no primary\"], [\" Durabilidade \", \" Alta — nenhum dado perdido em failover \", \" Replication lag — pode perder últimas transações \"], [\" Latência de write \", \" Maior — espera confirmação da replica \", \" Menor — primary não espera replica \"], [\" Disponibilidade \", \" Write bloqueia se replica cair \", \" Primary funciona independente de replicas \"], [\" Uso típico \", \"Dados financeiros, 1 replica sync + N async\", \"Read replicas, analytics, relatórios\"], ]} / Replication Lag — O Problema sql PostgreSQL: verificar lag em ms SELECT client addr, state, sent lsn, write lsn, flush lsn, replay lsn, lag em bytes (sent lsn replay lsn) AS replication lag bytes, lag em tempo now() pg last xact replay timestamp() AS replication delay FROM pg stat replication; Read after write inconsistency: usuário escreve no primary, lê da replica antes de sincronizar — dado \"desaparece\". Solução: ler do primary após write próprio (sticky reads), ou usar sync replication para queries críticas. Failover Automático Patroni — HA para PostgreSQL, usa etcd/Consul/ZooKeeper para consensus Orchestrator — failover MySQL/MariaDB AWS RDS Multi AZ — failover automático gerenciado, ~60s PgBouncer — reconecta automaticamente após failover Eleição de nova primary — precisa de consensus (evita split brain) Redirect de conexões — DNS ou VIP (Virtual IP) Dados não replicados = perdidos (se async) RPO (Recovery Point Objective) — quanto dado aceita perder? RTO (Recovery Time Objective) — quanto downtime aceita? Multi Master / Active Active Node A ◄──── bi directional replication ────► Node B. conflict: mesma row atualizada em ambos simultaneamente → CONFLICT. Resolução: last write wins (timestamp), application level merge, ou CRDTs. Multi master é complexo. Conflitos são difíceis de resolver corretamente. Use apenas quando latência geográfica realmente exige writes locais por região. Considere CockroachDB ou Spanner para isso.",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#sharding",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Sharding",
+    "anchor": "sharding",
+    "text": "Divide dados horizontalmente entre múltiplos servidores (shards). Cada shard armazena um subconjunto dos dados. Necessário quando um único servidor não comporta todo o dataset. Antes de shardear: tente replicação + connection pooling + caching. Sharding adiciona complexidade enorme. Maioria das aplicações nunca precisa de sharding real — PostgreSQL aguenta 10TB+ em hardware adequado. Estratégias de Sharding Particiona por intervalos de valores de uma chave (ex: user id 1–1M no shard 1, 1M–2M no shard 2). Range queries eficientes (scan contíguo) Fácil de adicionar novos shards ⚠️ Hotspot: shard com usuários recentes sobrecarregado ⚠️ Distribuição desbalanceada Hash(shard key) % N determina o shard. Distribui dados uniformemente. Distribuição uniforme — sem hotspot ⚠️ Range queries ineficientes (scatter gather) ⚠️ Resharding difícil: mudar N = remover quase tudo Solução: Consistent Hashing com virtual nodes Lookup table centralizada mapeia keys para shards. Máxima flexibilidade. Controle total sobre onde cada dado vai Balanceamento manual possível ⚠️ Lookup table = single point of failure ⚠️ Latência extra por consulta ao diretório Dados de usuários por região ficam no shard daquela região. Latência mínima para usuário local Compliance de dados (GDPR, LGPD) ⚠️ Queries cross region muito caras Ex: Usuários BR → shard sa east 1 Consistent Hashing Problema do Hash normal: hash(key) % 3 . Adicionar 1 shard: hash(key) % 4 → 75% dos dados mudam de shard. key → hash → posição no anel → próximo nó no sentido horário. Adicionar Shard D: apenas redistribui keys do arco afetado (~25%). Virtual nodes: cada shard tem múltiplas posições no anel → distribuição uniforme. Problemas de Sharding Cross shard JOINs \", \"Tabelas em shards diferentes — JOIN impossível no DB\", \"Denormalize dados, faça JOIN na aplicação, ou use mesmo shard key\"], [\" Cross shard transactions \", \"Transação abrange múltiplos shards\", \"Saga pattern, 2PC (caro), redesenhar para evitar\"], [\" Hotspot \", \"1 shard recebe 80% do tráfego\", \"Compound shard key, virtual nodes, consistent hashing\"], [\" Resharding \", \"Redistribuir dados ao mudar número de shards\", \"Consistent hashing, online resharding, feature flag\"], [\" Schema changes \", \"ALTER TABLE em N shards simultaneamente\", \"Rolling migrations, online DDL (pt online schema change)\"], [\" Global sequences \", \"AUTO INCREMENT não funciona entre shards\", \"UUID v7, Snowflake ID, ULID\"], ]} / typescript // Snowflake ID: ID global único sem coordenação // 64 bits = timestamp(41) + datacenter(5) + machine(5) + sequence(12) class SnowflakeId { private sequence = 0 private lastTimestamp = 1n generate(): bigint { let ts = BigInt(Date.now()) if (ts === this.lastTimestamp) { this.sequence = (this.sequence + 1) & 0xFFF // max 4096/ms if (this.sequence === 0) ts = this.waitNextMs(ts) } else { this.sequence = 0 } this.lastTimestamp = ts return (ts << 22n) (BigInt(this.datacenterId) << 17n) (BigInt(this.machineId) << 12n) BigInt(this.sequence) } }",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#particionamento",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Particionamento",
+    "anchor": "particionamento",
+    "text": "Divide uma tabela grande em partes menores (partições) no mesmo servidor . Diferente de sharding (múltiplos servidores), particionamento é transparente para a aplicação. Tipos de Particionamento Particiona por intervalo de valores — mais comum para dados temporais. sql CREATE TABLE orders ( order date DATE, ... ) PARTITION BY RANGE (order date); CREATE TABLE orders 2024 PARTITION OF orders FOR VALUES FROM ('2024 01 01') TO ('2025 01 01'); CREATE TABLE orders 2025 PARTITION OF orders FOR VALUES FROM ('2025 01 01') TO ('2026 01 01'); Distribui rows uniformemente entre N partições via hash da chave. sql CREATE TABLE users ( user id UUID, ... ) PARTITION BY HASH (user id); CREATE TABLE users p0 PARTITION OF users FOR VALUES WITH (modulus 4, remainder 0); CREATE TABLE users p1 PARTITION OF users FOR VALUES WITH (modulus 4, remainder 1); Particiona por lista de valores discretos — ideal para regiões, status, tipos. sql CREATE TABLE customers ( country CHAR(2), ... ) PARTITION BY LIST (country); CREATE TABLE customers br PARTITION OF customers FOR VALUES IN ('BR'); CREATE TABLE customers us PARTITION OF customers FOR VALUES IN ('US', 'CA'); Combina estratégias — Range por data, depois Hash por user id. Range(year) → Hash(user id): dados daquele ano distribuídos List(region) → Range(date): dados por região e tempo Mais complexo de gerenciar, muito poderoso para analytics Benefícios do Particionamento Query com filtro na chave de partição só escaneia partições relevantes. WHERE order date '2025 01 01' ignora anos anteriores. DROP PARTITION orders 2020 é instantâneo. Sem DELETE scan de milhões de rows. Archiving por detach + attach. Partições diferentes escaneadas em paralelo. PostgreSQL e MySQL suportam natively. Índice por partição = menor, cabe em memória. B tree em 100M rows vs 1M rows na partição atual. Writes recentes sempre vão à última partição (range por data). Partições antigas ficam frias no storage. VACUUM, ANALYZE, REINDEX em partição individual sem bloquear tabela inteira.",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#connection-pooling",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "Connection Pooling",
+    "anchor": "connection-pooling",
+    "text": "Gerencia um pool de conexões abertas ao banco. Requests da aplicação \"emprestam\" uma conexão existente em vez de abrir uma nova (custo ~50ms + memória). Por que Connection Pooling é Crítico Modos de Pooling Session \", \"Conexão alocada por toda a sessão do client\", \"Apps que usam features de sessão (prepared statements, SET, LISTEN)\", \"Pool size = clients simultâneos\"], [\" Transaction \", \"Conexão alocada apenas durante a transação\", \"Maioria das apps web — padrão recomendado\", \"Sem prepared statements, sem SET persistente\"], [\" Statement \", \"Conexão liberada após cada statement\", \"Apps autocommit, analytics\", \"Sem transações multi statement\"], ]} / PgBouncer — Configuração Essencial ini pgbouncer.ini [databases] mydb = host=primary db port=5432 dbname=mydb [pgbouncer] pool mode = transaction recomendado max client conn = 1000 conexões que app pode abrir default pool size = 25 conexões abertas no DB por database/user min pool size = 5 mínimo sempre aberto (warm pool) reserve pool size = 5 emergência quando pool cheio reserve pool timeout = 5 segundos de espera antes de usar reserve server idle timeout = 600 fecha conexão ociosa ao DB após 10min client idle timeout = 0 desativado — app controla Fórmula: pool size = Ncores 2 + N disks (regra para PostgreSQL) Ex: 8 cores + 2 disks = ~18 conexões efetivas por pool HikariCP (Java) — Configuração yaml Spring Boot application.yml spring.datasource: hikari: maximum pool size: 20 conexões máximas no pool minimum idle: 5 mínimo ociosas mantidas idle timeout: 600000 10min ocioso → fechar conexão connection timeout: 30000 30s máx aguardando conexão livre max lifetime: 1800000 30min → reciclar conexão (evita stale) keepalive time: 60000 ping a cada 60s para manter viva leak detection threshold: 5000 log se conexão ficar 5s não devolvida Pool size ótimo não é máximo possível. Muitas conexões = CPU scheduling overhead. Fórmula HikariCP: pool size = (core count 2) + effective spindle count . Para SSD, use core count 2.",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
+  },
+  {
+    "id": "banco-escala#sql-vs-nosql-vs-newsql",
+    "slug": "banco-escala",
+    "title": "Banco de Dados & Escala",
+    "category": "database",
+    "section": "SQL vs NoSQL vs NewSQL",
+    "anchor": "sql-vs-nosql-vs-newsql",
+    "text": "Escolha do banco de dados é uma das decisões mais impactantes em arquitetura. Cada família tem trade offs claros. Comparativo Geral Schema \", \"Rígido, pré definido\", \"Flexível, schema less\", \"Rígido (como SQL)\"], [\" ACID \", \" Full ACID \", \" Eventual consistency (maioria) \", \" ACID distribuído \"], [\" Escala horizontal \", \" Difícil (sharding manual) \", \" Nativo \", \" Nativo \"], [\" JOINs \", \" Eficiente \", \" Sem suporte ou muito caro \", \" Suportado \"], [\" Query language \", \"SQL padrão\", \"Varia por banco\", \"SQL padrão\"], [\" Exemplos \", \"PostgreSQL, MySQL, Oracle\", \"MongoDB, Cassandra, Redis, DynamoDB\", \"CockroachDB, TiDB, Spanner\"], ]} / Quando usar cada NoSQL Dados semi estruturados com schema variável. JSON nativo. Catálogo de produtos (atributos variáveis) CMS, perfis de usuário Rápido desenvolvimento (schema flexível) ⚠️ Transações entre documentos complexas Alta escrita, dados time series, IoT. Excelente throughput. Logs de eventos, métricas, IoT sensors Time series data (com partition por período) Escrita massiva e read por chave primária ⚠️ Query flexível quase impossível Lookup por chave com latência sub milissegundo. Sessions, cache, rate limiting DynamoDB: access patterns bem definidos Redis: estruturas ricas (sorted sets, streams) ⚠️ Sem query flexível — sabe exatamente a key Dados de relacionamentos complexos. Traversal de grafos. Redes sociais (friends of friends) Detecção de fraude (grafos de transações) Knowledge graphs, recomendações ⚠️ Escala horizontal limitada em Neo4j NewSQL — Melhor dos Dois Mundos PostgreSQL compatível com escala horizontal automática e ACID distribuído. Consensus via Raft (cada range = 3 replicas) Geo partitioning para latência mínima por região Multiregion tables com leitura local Serverless option disponível MySQL compatível. Separa storage (TiKV) de compute. Bom para HTAP (OLTP + OLAP). TiKV: key value distribuído (Raft) TiFlash: columnar storage para analytics Uma query pode misturar OLTP e OLAP Muito usado em fintechs asiáticas CQRS para Escala de Leitura sql Command side: PostgreSQL (consistência, writes) INSERT INTO orders (id, user id, total) VALUES (uuid, 123, 199.90); Publica evento: OrderCreated → mensageria Query side: ElasticSearch (busca), Redis (ranking), Cassandra (histórico) Projeções desnormalizadas para cada caso de uso Regra geral: PostgreSQL + Redis cache + read replicas aguenta 99% das aplicações. Parta para NoSQL quando tiver access patterns bem definidos que SQL não atende eficientemente. Parta para NewSQL quando precisar de escala horizontal COM ACID.",
+    "tags": [
+      "Sharding",
+      "Replicação",
+      "Particionamento",
+      "Read Replica"
+    ]
   }
 ]

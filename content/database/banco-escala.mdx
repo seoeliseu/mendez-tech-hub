@@ -1,0 +1,562 @@
+---
+title: "Banco de Dados & Escala"
+slug: banco-escala
+category: database
+icon: "🗄️"
+accent: "#fbbf24"
+description: "Sharding, Replicação, Particionamento, Read Replicas e estratégias para escalar banco de dados horizontalmente."
+tags: [Sharding, Replicação, Particionamento, Read Replica]
+order: 6
+updated: 2026-07-22
+---
+
+## Vertical vs Horizontal Scaling
+
+Primeiro passo ao planejar escala de banco: entender o trade-off entre crescer a máquina ou crescer o número de máquinas.
+
+<CardGrid cols={2}>
+
+<Card accent="#fbbf24" title="⬆️ Scale Up (Vertical)">
+Aumenta CPU, RAM, disco na mesma máquina.
+
+- Simples — sem mudanças de código
+- Sem latência de rede entre shards
+- Sem complexidade de distribuição
+- Limite físico de hardware (teto)
+- Downtime para upgrade de hardware
+- Ponto único de falha
+- Caro — hardware premium tem custo exponencial
+</Card>
+
+<Card accent="#fbbf24" title="⬅️➡️ Scale Out (Horizontal)">
+Adiciona mais nós/servidores ao cluster.
+
+- Escala sem limite teórico
+- Alta disponibilidade com redundância
+- Commodity hardware (mais barato)
+- Complexidade distribuída
+- Necessita sharding/particionamento
+- Latência de rede entre nós
+- Consistência distribuída mais difícil
+</Card>
+
+</CardGrid>
+
+<Callout type="info">
+**Estratégia típica:** comece com scale up (mais simples) até o custo marginal superar scale out. Maioria dos sistemas aguenta décadas com um único postgres bem configurado + read replicas.
+</Callout>
+
+### Gargalos de Performance — Diagnosticar Antes de Escalar
+
+<CardGrid cols={3}>
+
+<Card accent="#fbbf24" title="Índices ausentes">
+Full table scan de 1M rows. Adicionar índice pode ser 1000x mais eficiente que escalar hardware.
+</Card>
+
+<Card accent="#fbbf24" title="N+1 Queries">
+1 query + N queries em loop. ORM mal configurado. Use eager loading / JOIN.
+</Card>
+
+<Card accent="#fbbf24" title="Lock contention">
+Transactions longas bloqueando rows. Otimizar tamanho de transação e isolamento.
+</Card>
+
+<Card accent="#fbbf24" title="Connection exhaustion">
+Sem connection pool. Cada request abre nova conexão. Configure PgBouncer ou HikariCP.
+</Card>
+
+<Card accent="#fbbf24" title="Schema mal modelado">
+Normalização excessiva causa joins caros. Denormalize dados de leitura frequente.
+</Card>
+
+<Card accent="#fbbf24" title="Cache miss">
+Queries idênticas batendo no DB. Camada Redis/Memcached pode eliminar 80% da carga.
+</Card>
+
+</CardGrid>
+
+### Ordem de Otimização (custo vs impacto)
+
+<FlowDiagram
+  rows={[
+    { box: "① Índices", color: "#66bb6a", note: "Grátis, impacto imediato. Sempre primeiro." },
+    { box: "② Query optimization", color: "#66bb6a", note: "Reescrever queries ruins. EXPLAIN ANALYZE é seu amigo." },
+    { box: "③ Connection pooling", color: "#66bb6a", note: "PgBouncer/HikariCP. Custo baixo, ganho alto." },
+    { box: "④ Caching layer", color: "#66bb6a", note: "Redis na frente. Elimina reads repetidos." },
+    { box: "⑤ Read replicas", color: "#66bb6a", note: "Separa read/write. Ainda um único primary." },
+    { box: "⑥ Scale up", color: "#fbbf24", note: "Mais RAM/CPU. Maior custo, sem code change." },
+    { box: "⑦ Sharding", color: "#fbbf24", note: "Complexidade alta. Só quando realmente necessário." },
+    { box: "⑧ NewSQL/NoSQL", color: "#f87171", note: "Reescrever aplicação. Última opção." },
+  ]}
+/>
+
+## Replicação
+
+Mantém cópias dos dados em múltiplos servidores para alta disponibilidade, disaster recovery e leitura distribuída.
+
+### Master-Slave (Primary-Replica)
+
+<FlowDiagram
+  rows={[
+    { box: "PRIMARY", color: "#fbbf24", note: "Aceita Writes + Reads" },
+    { box: "REPLICA 1", color: "#38bdf8", indent: 1, note: "Apenas Read (async)" },
+    { box: "REPLICA 2", color: "#38bdf8", indent: 1, note: "Apenas Read (async)" },
+    { box: "REPLICA 3", color: "#38bdf8", indent: 1, note: "Backup / DR (sync - 1 replica)" },
+  ]}
+/>
+
+*PRIMARY → REPLICA 1, REPLICA 2, REPLICA 3 via WAL / Binlog stream.*
+
+### Síncrono vs Assíncrono
+
+<ComparisonTable
+  head={["Aspecto", "Síncrono", "Assíncrono"]}
+  rows={[
+    ["<strong>Write confirmado</strong>", "Após commit em primary + pelo menos 1 replica", "Após commit apenas no primary"],
+    ["<strong>Durabilidade</strong>", "<span style='color:#66bb6a'>Alta — nenhum dado perdido em failover</span>", "<span style='color:#fbbf24'>Replication lag — pode perder últimas transações</span>"],
+    ["<strong>Latência de write</strong>", "<span style='color:#f87171'>Maior — espera confirmação da replica</span>", "<span style='color:#66bb6a'>Menor — primary não espera replica</span>"],
+    ["<strong>Disponibilidade</strong>", "<span style='color:#fbbf24'>Write bloqueia se replica cair</span>", "<span style='color:#66bb6a'>Primary funciona independente de replicas</span>"],
+    ["<strong>Uso típico</strong>", "Dados financeiros, 1 replica sync + N async", "Read replicas, analytics, relatórios"],
+  ]}
+/>
+
+### Replication Lag — O Problema
+
+```sql
+-- PostgreSQL: verificar lag em ms
+SELECT
+  client_addr,
+  state,
+  sent_lsn,
+  write_lsn,
+  flush_lsn,
+  replay_lsn,
+  -- lag em bytes
+  (sent_lsn - replay_lsn) AS replication_lag_bytes,
+  -- lag em tempo
+  now() - pg_last_xact_replay_timestamp() AS replication_delay
+FROM pg_stat_replication;
+```
+
+<Callout type="warn">
+**Read-after-write inconsistency:** usuário escreve no primary, lê da replica antes de sincronizar — dado "desaparece". Solução: ler do primary após write próprio (sticky reads), ou usar sync replication para queries críticas.
+</Callout>
+
+### Failover Automático
+
+<CardGrid cols={2}>
+
+<Card accent="#fbbf24" title="Ferramentas">
+- **Patroni** — HA para PostgreSQL, usa etcd/Consul/ZooKeeper para consensus
+- **Orchestrator** — failover MySQL/MariaDB
+- **AWS RDS Multi-AZ** — failover automático gerenciado, ~60s
+- **PgBouncer** — reconecta automaticamente após failover
+</Card>
+
+<Card accent="#fbbf24" title="Considerações de Failover">
+- Eleição de nova primary — precisa de consensus (evita split-brain)
+- Redirect de conexões — DNS ou VIP (Virtual IP)
+- Dados não replicados = perdidos (se async)
+- RPO (Recovery Point Objective) — quanto dado aceita perder?
+- RTO (Recovery Time Objective) — quanto downtime aceita?
+</Card>
+
+</CardGrid>
+
+### Multi-Master / Active-Active
+
+<FlowDiagram
+  rows={[
+    { box: "Node A", color: "#fbbf24", note: "Aceita Writes · Região: us-east" },
+    { box: "Node B", color: "#38bdf8", note: "Aceita Writes · Região: eu-west" },
+  ]}
+/>
+
+*Node A ◄──── bi-directional replication ────► Node B. conflict: mesma row atualizada em ambos simultaneamente → CONFLICT. Resolução: last-write-wins (timestamp), application-level merge, ou CRDTs.*
+
+<Callout type="warn">
+**Multi-master é complexo.** Conflitos são difíceis de resolver corretamente. Use apenas quando latência geográfica realmente exige writes locais por região. Considere CockroachDB ou Spanner para isso.
+</Callout>
+
+## Sharding
+
+Divide dados horizontalmente entre múltiplos servidores (shards). Cada shard armazena um subconjunto dos dados. Necessário quando um único servidor não comporta todo o dataset.
+
+<Callout type="info">
+**Antes de shardear:** tente replicação + connection pooling + caching. Sharding adiciona complexidade enorme. Maioria das aplicações nunca precisa de sharding real — PostgreSQL aguenta 10TB+ em hardware adequado.
+</Callout>
+
+### Estratégias de Sharding
+
+<CardGrid cols={2}>
+
+<Card accent="#fbbf24" title="📏 Range-Based Sharding">
+Particiona por intervalos de valores de uma chave (ex: user_id 1–1M no shard 1, 1M–2M no shard 2).
+
+- Range queries eficientes (scan contíguo)
+- Fácil de adicionar novos shards
+- <span style={{color: "#fbbf24"}}>⚠️ Hotspot: shard com usuários recentes sobrecarregado</span>
+- <span style={{color: "#f87171"}}>⚠️ Distribuição desbalanceada</span>
+</Card>
+
+<Card accent="#fbbf24" title="#️⃣ Hash-Based Sharding">
+Hash(shard_key) % N determina o shard. Distribui dados uniformemente.
+
+- Distribuição uniforme — sem hotspot
+- <span style={{color: "#f87171"}}>⚠️ Range queries ineficientes (scatter-gather)</span>
+- <span style={{color: "#f87171"}}>⚠️ Resharding difícil: mudar N = remover quase tudo</span>
+- Solução: Consistent Hashing com virtual nodes
+</Card>
+
+<Card accent="#fbbf24" title="📖 Directory-Based Sharding">
+Lookup table centralizada mapeia keys para shards. Máxima flexibilidade.
+
+- Controle total sobre onde cada dado vai
+- Balanceamento manual possível
+- <span style={{color: "#f87171"}}>⚠️ Lookup table = single point of failure</span>
+- <span style={{color: "#f87171"}}>⚠️ Latência extra por consulta ao diretório</span>
+</Card>
+
+<Card accent="#fbbf24" title="🌍 Geographic Sharding">
+Dados de usuários por região ficam no shard daquela região.
+
+- Latência mínima para usuário local
+- Compliance de dados (GDPR, LGPD)
+- <span style={{color: "#f87171"}}>⚠️ Queries cross-region muito caras</span>
+- Ex: Usuários BR → shard sa-east-1
+</Card>
+
+</CardGrid>
+
+### Consistent Hashing
+
+Problema do Hash normal: `hash(key) % 3`. Adicionar 1 shard: `hash(key) % 4` → 75% dos dados mudam de shard.
+
+<FlowDiagram
+  title="Consistent Hashing — anel (◉ = shard node, · = posição no anel / virtual node)"
+  rows={[
+    { box: "Shard A", color: "#fbbf24" },
+    { box: "Shard B", color: "#38bdf8" },
+    { box: "Shard C", color: "#66bb6a" },
+  ]}
+/>
+
+*key → hash → posição no anel → próximo nó no sentido horário. Adicionar Shard D: apenas redistribui keys do arco afetado (~25%). Virtual nodes: cada shard tem múltiplas posições no anel → distribuição uniforme.*
+
+### Problemas de Sharding
+
+<ComparisonTable
+  head={["Problema", "Descrição", "Solução"]}
+  rows={[
+    ["<strong>Cross-shard JOINs</strong>", "Tabelas em shards diferentes — JOIN impossível no DB", "Denormalize dados, faça JOIN na aplicação, ou use mesmo shard key"],
+    ["<strong>Cross-shard transactions</strong>", "Transação abrange múltiplos shards", "Saga pattern, 2PC (caro), redesenhar para evitar"],
+    ["<strong>Hotspot</strong>", "1 shard recebe 80% do tráfego", "Compound shard key, virtual nodes, consistent hashing"],
+    ["<strong>Resharding</strong>", "Redistribuir dados ao mudar número de shards", "Consistent hashing, online resharding, feature flag"],
+    ["<strong>Schema changes</strong>", "ALTER TABLE em N shards simultaneamente", "Rolling migrations, online DDL (pt-online-schema-change)"],
+    ["<strong>Global sequences</strong>", "AUTO_INCREMENT não funciona entre shards", "UUID v7, Snowflake ID, ULID"],
+  ]}
+/>
+
+```typescript
+// Snowflake ID: ID global único sem coordenação
+// 64 bits = timestamp(41) + datacenter(5) + machine(5) + sequence(12)
+class SnowflakeId {
+  private sequence = 0
+  private lastTimestamp = -1n
+
+  generate(): bigint {
+    let ts = BigInt(Date.now())
+    if (ts === this.lastTimestamp) {
+      this.sequence = (this.sequence + 1) & 0xFFF // max 4096/ms
+      if (this.sequence === 0) ts = this.waitNextMs(ts)
+    } else { this.sequence = 0 }
+    this.lastTimestamp = ts
+    return (ts << 22n) | (BigInt(this.datacenterId) << 17n)
+           | (BigInt(this.machineId) << 12n) | BigInt(this.sequence)
+  }
+}
+```
+
+## Particionamento
+
+Divide uma tabela grande em partes menores (partições) **no mesmo servidor**. Diferente de sharding (múltiplos servidores), particionamento é transparente para a aplicação.
+
+### Tipos de Particionamento
+
+<CardGrid cols={2}>
+
+<Card accent="#fbbf24" title="📅 Range Partitioning">
+Particiona por intervalo de valores — mais comum para dados temporais.
+
+```sql
+CREATE TABLE orders (
+  order_date DATE,
+  ...
+) PARTITION BY RANGE (order_date);
+
+CREATE TABLE orders_2024 PARTITION OF orders
+  FOR VALUES FROM ('2024-01-01') TO ('2025-01-01');
+CREATE TABLE orders_2025 PARTITION OF orders
+  FOR VALUES FROM ('2025-01-01') TO ('2026-01-01');
+```
+
+</Card>
+
+<Card accent="#fbbf24" title="#️⃣ Hash Partitioning">
+Distribui rows uniformemente entre N partições via hash da chave.
+
+```sql
+CREATE TABLE users (
+  user_id UUID,
+  ...
+) PARTITION BY HASH (user_id);
+
+CREATE TABLE users_p0 PARTITION OF users
+  FOR VALUES WITH (modulus 4, remainder 0);
+CREATE TABLE users_p1 PARTITION OF users
+  FOR VALUES WITH (modulus 4, remainder 1);
+```
+
+</Card>
+
+<Card accent="#fbbf24" title="📋 List Partitioning">
+Particiona por lista de valores discretos — ideal para regiões, status, tipos.
+
+```sql
+CREATE TABLE customers (
+  country CHAR(2),
+  ...
+) PARTITION BY LIST (country);
+
+CREATE TABLE customers_br PARTITION OF customers
+  FOR VALUES IN ('BR');
+CREATE TABLE customers_us PARTITION OF customers
+  FOR VALUES IN ('US', 'CA');
+```
+
+</Card>
+
+<Card accent="#fbbf24" title="🔀 Composite Partitioning">
+Combina estratégias — Range por data, depois Hash por user_id.
+
+- Range(year) → Hash(user_id): dados daquele ano distribuídos
+- List(region) → Range(date): dados por região e tempo
+- Mais complexo de gerenciar, muito poderoso para analytics
+</Card>
+
+</CardGrid>
+
+### Benefícios do Particionamento
+
+<CardGrid cols={3}>
+
+<Card accent="#fbbf24" title="Partition Pruning">
+Query com filtro na chave de partição só escaneia partições relevantes. WHERE order_date > '2025-01-01' ignora anos anteriores.
+</Card>
+
+<Card accent="#fbbf24" title="Archival fácil">
+DROP PARTITION orders_2020 é instantâneo. Sem DELETE scan de milhões de rows. Archiving por detach + attach.
+</Card>
+
+<Card accent="#fbbf24" title="Parallel queries">
+Partições diferentes escaneadas em paralelo. PostgreSQL e MySQL suportam natively.
+</Card>
+
+<Card accent="#fbbf24" title="Índices menores">
+Índice por partição = menor, cabe em memória. B-tree em 100M rows vs 1M rows na partição atual.
+</Card>
+
+<Card accent="#fbbf24" title="I/O localizado">
+Writes recentes sempre vão à última partição (range por data). Partições antigas ficam frias no storage.
+</Card>
+
+<Card accent="#fbbf24" title="Manutenção isolada">
+VACUUM, ANALYZE, REINDEX em partição individual sem bloquear tabela inteira.
+</Card>
+
+</CardGrid>
+
+## Connection Pooling
+
+Gerencia um pool de conexões abertas ao banco. Requests da aplicação "emprestam" uma conexão existente em vez de abrir uma nova (custo ~50ms + memória).
+
+### Por que Connection Pooling é Crítico
+
+<Pipeline
+  steps={[
+    { label: "App", kind: "req" },
+    { label: "DB", kind: "res", note: '"Nova conexão" (handshake, auth, alloc) × 1000; DB: 1000 backends × 5MB RAM = 5GB só em conexões; CPU: overhead de process/thread scheduling' },
+  ]}
+  caption="SEM pool — 1000 requests/s"
+/>
+
+<Pipeline
+  steps={[
+    { label: "App", kind: "req" },
+    { label: "PgBouncer", kind: "step" },
+    { label: "DB", kind: "res", note: 'pool fixo de 50 conexões; DB: 50 backends × 5MB = 250MB; Requests aguardam na fila do pool (<1ms) se todas ocupadas' },
+  ]}
+  caption="COM pool — 1000 requests/s"
+/>
+
+### Modos de Pooling
+
+<ComparisonTable
+  head={["Modo", "Comportamento", "Quando usar", "Limitações"]}
+  rows={[
+    ["<strong>Session</strong>", "Conexão alocada por toda a sessão do client", "Apps que usam features de sessão (prepared statements, SET, LISTEN)", "Pool size = clients simultâneos"],
+    ["<strong style='color:#66bb6a'>Transaction</strong>", "Conexão alocada apenas durante a transação", "Maioria das apps web — padrão recomendado", "Sem prepared statements, sem SET persistente"],
+    ["<strong>Statement</strong>", "Conexão liberada após cada statement", "Apps autocommit, analytics", "Sem transações multi-statement"],
+  ]}
+/>
+
+### PgBouncer — Configuração Essencial
+
+```ini
+# pgbouncer.ini
+[databases]
+mydb = host=primary-db port=5432 dbname=mydb
+
+[pgbouncer]
+pool_mode = transaction         # recomendado
+max_client_conn = 1000          # conexões que app pode abrir
+default_pool_size = 25          # conexões abertas no DB por database/user
+min_pool_size = 5               # mínimo sempre aberto (warm pool)
+reserve_pool_size = 5           # emergência quando pool cheio
+reserve_pool_timeout = 5        # segundos de espera antes de usar reserve
+server_idle_timeout = 600       # fecha conexão ociosa ao DB após 10min
+client_idle_timeout = 0         # desativado — app controla
+
+# Fórmula: pool size = Ncores * 2 + N_disks (regra para PostgreSQL)
+# Ex: 8 cores + 2 disks = ~18 conexões efetivas por pool
+```
+
+### HikariCP (Java) — Configuração
+
+```yaml
+# Spring Boot application.yml
+spring.datasource:
+  hikari:
+    maximum-pool-size: 20         # conexões máximas no pool
+    minimum-idle: 5               # mínimo ociosas mantidas
+    idle-timeout: 600000          # 10min ocioso → fechar conexão
+    connection-timeout: 30000     # 30s máx aguardando conexão livre
+    max-lifetime: 1800000         # 30min → reciclar conexão (evita stale)
+    keepalive-time: 60000         # ping a cada 60s para manter viva
+    leak-detection-threshold: 5000 # log se conexão ficar 5s não devolvida
+```
+
+<Callout type="tip">
+**Pool size ótimo não é máximo possível.** Muitas conexões = CPU scheduling overhead. Fórmula HikariCP: `pool_size = (core_count * 2) + effective_spindle_count`. Para SSD, use core_count * 2.
+</Callout>
+
+## SQL vs NoSQL vs NewSQL
+
+Escolha do banco de dados é uma das decisões mais impactantes em arquitetura. Cada família tem trade-offs claros.
+
+### Comparativo Geral
+
+<ComparisonTable
+  head={["Aspecto", "SQL (RDBMS)", "NoSQL", "NewSQL"]}
+  rows={[
+    ["<strong>Schema</strong>", "Rígido, pré-definido", "Flexível, schema-less", "Rígido (como SQL)"],
+    ["<strong>ACID</strong>", "<span style='color:#66bb6a'>Full ACID</span>", "<span style='color:#f87171'>Eventual consistency (maioria)</span>", "<span style='color:#66bb6a'>ACID distribuído</span>"],
+    ["<strong>Escala horizontal</strong>", "<span style='color:#fbbf24'>Difícil (sharding manual)</span>", "<span style='color:#66bb6a'>Nativo</span>", "<span style='color:#66bb6a'>Nativo</span>"],
+    ["<strong>JOINs</strong>", "<span style='color:#66bb6a'>Eficiente</span>", "<span style='color:#f87171'>Sem suporte ou muito caro</span>", "<span style='color:#66bb6a'>Suportado</span>"],
+    ["<strong>Query language</strong>", "SQL padrão", "Varia por banco", "SQL padrão"],
+    ["<strong>Exemplos</strong>", "PostgreSQL, MySQL, Oracle", "MongoDB, Cassandra, Redis, DynamoDB", "CockroachDB, TiDB, Spanner"],
+  ]}
+/>
+
+### Quando usar cada NoSQL
+
+<CardGrid cols={2}>
+
+<Card accent="#fbbf24" title="📄 Document (MongoDB, Firestore)">
+Dados semi-estruturados com schema variável. JSON nativo.
+
+- Catálogo de produtos (atributos variáveis)
+- CMS, perfis de usuário
+- Rápido desenvolvimento (schema flexível)
+- <span style={{color: "#f87171"}}>⚠️ Transações entre documentos complexas</span>
+</Card>
+
+<Card accent="#fbbf24" title="📊 Wide-Column (Cassandra, HBase)">
+Alta escrita, dados time-series, IoT. Excelente throughput.
+
+- Logs de eventos, métricas, IoT sensors
+- Time-series data (com partition por período)
+- Escrita massiva e read por chave primária
+- <span style={{color: "#f87171"}}>⚠️ Query flexível quase impossível</span>
+</Card>
+
+<Card accent="#fbbf24" title="⚡ Key-Value (Redis, DynamoDB)">
+Lookup por chave com latência sub-milissegundo.
+
+- Sessions, cache, rate limiting
+- DynamoDB: access patterns bem definidos
+- Redis: estruturas ricas (sorted sets, streams)
+- <span style={{color: "#f87171"}}>⚠️ Sem query flexível — sabe exatamente a key</span>
+</Card>
+
+<Card accent="#fbbf24" title="🕸️ Graph (Neo4j, Neptune)">
+Dados de relacionamentos complexos. Traversal de grafos.
+
+- Redes sociais (friends-of-friends)
+- Detecção de fraude (grafos de transações)
+- Knowledge graphs, recomendações
+- <span style={{color: "#f87171"}}>⚠️ Escala horizontal limitada em Neo4j</span>
+</Card>
+
+</CardGrid>
+
+### NewSQL — Melhor dos Dois Mundos
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="CockroachDB">
+PostgreSQL-compatível com escala horizontal automática e ACID distribuído.
+
+- Consensus via Raft (cada range = 3 replicas)
+- Geo-partitioning para latência mínima por região
+- Multiregion tables com leitura local
+- Serverless option disponível
+</Card>
+
+<Card accent="#38bdf8" title="TiDB">
+MySQL-compatível. Separa storage (TiKV) de compute. Bom para HTAP (OLTP + OLAP).
+
+- TiKV: key-value distribuído (Raft)
+- TiFlash: columnar storage para analytics
+- Uma query pode misturar OLTP e OLAP
+- Muito usado em fintechs asiáticas
+</Card>
+
+</CardGrid>
+
+### CQRS para Escala de Leitura
+
+```sql
+-- Command side: PostgreSQL (consistência, writes)
+INSERT INTO orders (id, user_id, total) VALUES (uuid, 123, 199.90);
+-- Publica evento: OrderCreated → mensageria
+
+-- Query side: ElasticSearch (busca), Redis (ranking), Cassandra (histórico)
+-- Projeções desnormalizadas para cada caso de uso
+```
+
+<FlowDiagram
+  rows={[
+    { box: "Write Model", color: "#38bdf8", note: "PostgreSQL" },
+    { box: "Event Bus", color: "#fbbf24", indent: 1, note: "OrderCreated" },
+    { box: "Read Models", color: "#66bb6a", indent: 2 },
+    { box: "Elasticsearch", color: "#66bb6a", indent: 3, note: "busca full-text" },
+    { box: "Redis", color: "#66bb6a", indent: 3, note: "dashboard tempo real" },
+    { box: "BigQuery", color: "#66bb6a", indent: 3, note: "analytics" },
+  ]}
+/>
+
+<Callout type="tip">
+**Regra geral:** PostgreSQL + Redis cache + read replicas aguenta 99% das aplicações. Parta para NoSQL quando tiver access patterns bem definidos que SQL não atende eficientemente. Parta para NewSQL quando precisar de escala horizontal COM ACID.
+</Callout>
