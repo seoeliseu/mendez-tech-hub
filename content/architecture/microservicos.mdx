@@ -1,0 +1,595 @@
+---
+title: "Microsserviços"
+slug: microservicos
+category: architecture
+icon: "🔗"
+accent: "#38bdf8"
+description: "Decomposição de serviços, comunicação síncrona/assíncrona, resiliência e padrões de distribuição."
+tags: [API Gateway, Circuit Breaker, Service Mesh]
+order: 2
+updated: 2026-07-22
+---
+
+## O que são microsserviços?
+
+<CardGrid cols={2}>
+
+<Card accent="#a78bfa" title="🧩 Serviços pequenos e independentes">
+Cada serviço tem uma única responsabilidade, seu próprio processo e banco de dados. Comunicam via API ou mensageria.
+</Card>
+
+<Card accent="#38bdf8" title="🚀 Deploy independente">
+Times podem fazer deploy do serviço deles sem afetar outros. Menos risco, mais velocidade.
+</Card>
+
+<Card accent="#fb923c" title="📦 Database por serviço">
+Nenhum serviço acessa o banco do outro. Isso garante isolamento, mas torna transações distribuídas complexas.
+</Card>
+
+<Card accent="#66bb6a" title="🔌 Comunicação explícita">
+REST, gRPC, GraphQL (síncrono) ou eventos via Kafka/RabbitMQ (assíncrono). Contratos bem definidos.
+</Card>
+
+</CardGrid>
+
+## Quando usar?
+
+<Pipeline
+  steps={[
+    { label: "Sistema grande?", kind: "req" },
+    { label: "Sim", note: "múltiplos domínios", kind: "step" },
+    { label: "Times separados?", kind: "step" },
+    { label: "Sim", kind: "step" },
+    { label: "✓ Microsserviços", kind: "res" },
+  ]}
+/>
+
+<Pipeline
+  steps={[
+    { label: "MVP / startup?", kind: "req" },
+    { label: "Sim", kind: "step" },
+    { label: "⚠ Comece monolito", kind: "step" },
+    { label: "Extraia serviços quando os limites ficarem claros", kind: "res" },
+  ]}
+/>
+
+## Trade-offs
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="✓ Vantagens">
+- ✓ Escalabilidade independente por serviço
+- ✓ Times autônomos e rápidos
+- ✓ Falha isolada — um serviço cai, os outros vivem
+- ✓ Tecnologias diferentes por serviço
+- ✓ Deploy contínuo sem coordenação total
+</Card>
+
+<Card accent="#f87171" title="✗ Desvantagens">
+- ✗ Complexidade operacional alta (k8s, service mesh...)
+- ✗ Latência de rede entre chamadas
+- ✗ Transações distribuídas difíceis
+- ✗ Observabilidade exige esforço (tracing distribuído)
+- ✗ Consistência eventual — não imediata
+</Card>
+
+</CardGrid>
+
+## Exemplo de arquitetura
+
+<FlowDiagram
+  rows={[
+    { box: "🌐 Client (Web/Mobile)", color: "#5f6882" },
+    { box: "🔀 API Gateway", color: "#38bdf8", indent: 1 },
+    { box: "👤 Users Service", color: "#66bb6a", indent: 2, note: "PostgreSQL" },
+    { box: "🛒 Orders Service", color: "#a78bfa", indent: 2, note: "MySQL" },
+    { box: "💳 Payment Service", color: "#fb923c", indent: 2, note: "MongoDB" },
+    { box: "📦 Inventory Service", color: "#38bdf8", indent: 2, note: "Redis + Postgres" },
+    { box: "📨 Event Bus (Kafka)", indent: 2 },
+  ]}
+/>
+
+## Saga Pattern
+
+<CardGrid cols={2}>
+
+<Card accent="#fb923c" title="❓ Problema">
+Transações ACID funcionam em um banco. Em microsserviços, cada serviço tem seu banco — não existe um `BEGIN/COMMIT` global. Como garantir consistência?
+</Card>
+
+<Card accent="#66bb6a" title="💡 Solução">
+Saga = sequência de transações locais. Cada passo publica um evento. Se um passo falha, executa transações **compensatórias** nos passos anteriores.
+</Card>
+
+</CardGrid>
+
+## Saga Coreografada
+
+Cada serviço reage a eventos — sem coordenador central.
+
+<Pipeline
+  steps={[
+    { label: "📦 Orders", note: "cria pedido", kind: "req" },
+    { label: "💳 Payment", note: "processa pagamento", kind: "step" },
+    { label: "📦 Inventory", note: "reserva estoque", kind: "step" },
+    { label: "🚚 Shipping", note: "cria entrega", kind: "res" },
+  ]}
+  caption="Eventos entre as setas: OrderCreated → PaymentDone → StockReserved"
+/>
+
+**⚡ Falha no Inventory → Compensação**
+
+<Pipeline
+  steps={[
+    { label: "StockFailed event", kind: "req" },
+    { label: "💳 Payment: estorno", kind: "step" },
+    { label: "📦 Order: cancelar", kind: "res" },
+  ]}
+/>
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="✓ Vantagens">
+Simples, sem ponto central de falha, serviços totalmente desacoplados
+</Card>
+
+<Card accent="#f87171" title="✗ Desvantagens">
+Difícil rastrear fluxo, risco de loops de eventos, sem visão global
+</Card>
+
+</CardGrid>
+
+## Saga Orquestrada
+
+Orquestrador central coordena todos os passos.
+
+<FlowDiagram
+  rows={[
+    { box: "🎯 Saga Orchestrator", color: "#fb923c" },
+    { box: "📦 Orders", color: "#a78bfa", indent: 1, note: "↕" },
+    { box: "💳 Payment", color: "#fb923c", indent: 1, note: "↕" },
+    { box: "📦 Inventory", color: "#38bdf8", indent: 1, note: "↕" },
+    { box: "🚚 Shipping", color: "#66bb6a", indent: 1, note: "↕" },
+  ]}
+/>
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="✓ Vantagens">
+Fácil de debugar, visão centralizada, lógica explícita
+</Card>
+
+<Card accent="#f87171" title="✗ Desvantagens">
+Ponto central de falha, acoplamento ao orquestrador, mais código
+</Card>
+
+</CardGrid>
+
+## Retry
+
+<Pipeline
+  steps={[
+    { label: "Request", kind: "req" },
+    { label: "❌ Falha", kind: "step" },
+    { label: "⏱ Wait (backoff)", kind: "step" },
+    { label: "🔄 Retry", kind: "step" },
+    { label: "✅ Sucesso", kind: "res" },
+  ]}
+/>
+
+**Estratégias de backoff:**
+
+<CardGrid cols={3}>
+
+<Card accent="#38bdf8" title="Fixed">
+1s → 1s → 1s
+</Card>
+
+<Card accent="#fb923c" title="Exponential">
+1s → 2s → 4s → 8s
+</Card>
+
+<Card accent="#a78bfa" title="Jitter">
+1s±rand → 2s±rand (evita thundering herd)
+</Card>
+
+</CardGrid>
+
+<Callout type="warn">
+**Atenção:** Retry só serve para falhas transitórias. Não retente erros 4xx (cliente errou). Defina max attempts e sempre use idempotency keys.
+</Callout>
+
+## Circuit Breaker
+
+<FlowDiagram
+  rows={[
+    { box: "🟢 CLOSED", color: "#66bb6a", note: "Estado normal. Requisições passam. Conta falhas." },
+    { box: "🔴 OPEN", color: "#f87171", indent: 1, note: "falhas > threshold → bloqueia tudo. Retorna erro imediato. Protege o serviço." },
+    { box: "🟡 HALF-OPEN", color: "#fb923c", indent: 2, note: "timeout → deixa passar poucas requisições. Testa se serviço voltou." },
+  ]}
+/>
+
+Em caso de **sucesso**, o circuito volta para CLOSED.
+
+<Callout type="info">
+Bibliotecas populares: `Resilience4j` (Java) `Polly` (.NET) `pybreaker` (Python) `opossum` (Node.js)
+</Callout>
+
+## Outros padrões de resiliência
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="🛡️ Bulkhead">
+Isola recursos por cliente/funcionalidade. Thread pools separados. Falha num não afeta outros. Analogia: compartimentos do navio.
+</Card>
+
+<Card accent="#38bdf8" title="⏳ Timeout">
+Nunca espere indefinidamente. Defina timeouts em todas as chamadas externas. Evita cascata de bloqueios em toda a cadeia.
+</Card>
+
+<Card accent="#66bb6a" title="🔄 Fallback">
+Resposta degradada quando falha. Cache, valor default, mensagem genérica. Melhor experiência que erro puro.
+</Card>
+
+<Card accent="#fb923c" title="🔍 Health Check">
+Endpoint `/health` e `/ready`. K8s usa pra decidir se manda tráfego. Falha aqui → pod reinicia ou sai do load balancer.
+</Card>
+
+<Card accent="#a78bfa" title="📊 Rate Limiting">
+Limita requisições por segundo/minuto por cliente. Protege contra abuso e sobrecarga. `Token bucket` ou `sliding window`.
+</Card>
+
+<Card accent="#38bdf8" title="🗺️ Service Mesh">
+Istio, Linkerd. Retry, circuit breaker e observabilidade sem código. Infraestrutura cuida da resiliência no sidecar proxy.
+</Card>
+
+</CardGrid>
+
+## Teorema CAP
+
+<Callout type="info">
+**Teorema:** Um sistema distribuído só pode garantir 2 das 3 propriedades ao mesmo tempo.
+</Callout>
+
+<CardGrid cols={3}>
+
+<Card accent="#38bdf8" pill="C" title="Consistency">
+Todo read recebe o write mais recente ou um erro. Todos os nós veem os mesmos dados ao mesmo tempo.
+</Card>
+
+<Card accent="#66bb6a" pill="A" title="Availability">
+Toda requisição recebe resposta (não erro). O sistema sempre responde, mas pode não ter os dados mais recentes.
+</Card>
+
+<Card accent="#f87171" pill="P" title="Partition Tolerance">
+Sistema continua operando mesmo com falha de comunicação entre nós. Em produção: P é obrigatório.
+</Card>
+
+</CardGrid>
+
+## Na prática: P é sempre necessário
+
+Redes falham. Partição de rede é inevitável. A escolha real é: **CP vs AP**
+
+<CardGrid cols={2}>
+
+<Card accent="#38bdf8" title="CP — Consistência + Partição">
+Durante partição: bloqueia writes ou retorna erro. Dados sempre corretos, mas pode ficar indisponível.
+
+Exemplos: `HBase` `Zookeeper` `etcd` `MongoDB (strong)`
+
+Use quando: dados financeiros, transações, inventário exato
+</Card>
+
+<Card accent="#66bb6a" title="AP — Disponibilidade + Partição">
+Durante partição: responde com dados possivelmente desatualizados. Sempre disponível, consistência eventual.
+
+Exemplos: `Cassandra` `DynamoDB` `CouchDB` `Riak`
+
+Use quando: redes sociais, carrinho de compras, contadores, DNS
+</Card>
+
+</CardGrid>
+
+## Consistência Eventual
+
+<Pipeline
+  steps={[
+    { label: "Write no Node A", kind: "req" },
+    { label: "Replicação assíncrona", note: "milissegundos a segundos", kind: "step" },
+    { label: "Node B e C atualizados", kind: "res" },
+  ]}
+/>
+
+Neste intervalo: read no Node B pode retornar dado antigo. Isso é **stale read**. Aceitável em muitos contextos.
+
+## Outbox Pattern
+
+<Callout type="info">
+**Problema:** Como garantir que um evento é publicado *se e somente se* a transação do banco for commitada? Não há two-phase commit entre banco e message broker.
+</Callout>
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="❌ Sem Outbox — risco real">
+1. Salva no banco
+
+2. Publica evento no Kafka
+
+3. App crasha entre 1 e 2 → evento perdido para sempre
+</Card>
+
+<Card accent="#66bb6a" title="✅ Com Outbox — garantia">
+1. Salva dado + evento na mesma transação
+
+2. Relay lê outbox e publica
+
+3. At-least-once garantido
+</Card>
+
+</CardGrid>
+
+## Fluxo do Outbox Pattern
+
+<FlowDiagram
+  rows={[
+    { box: "1. App Service", color: "#38bdf8" },
+    { box: "orders table", color: "#a78bfa", indent: 1, note: "mesma transação" },
+    { box: "outbox table", color: "#fb923c", indent: 1 },
+    { box: "2. Message Relay", color: "#fb923c" },
+    { box: "lê outbox (poll ou CDC)", color: "#fb923c", indent: 1 },
+    { box: "publica no Kafka/SQS", color: "#66bb6a", indent: 2 },
+    { box: "3. Relay", color: "#66bb6a" },
+    { box: "marca registro como published=true ou deleta", color: "#5f6882", indent: 1 },
+  ]}
+/>
+
+## O que é o Relay?
+
+Relay é um **processo/serviço independente** (ou background thread) que fica em loop lendo a tabela outbox e publicando no broker. Não é necessariamente um console — pode assumir várias formas dependendo da stack.
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="🔁 Background Worker / Thread">
+Roda dentro do próprio microsserviço como thread separada. Mais simples, mas acoplado ao processo principal. Se o serviço cai, o relay para junto.
+</Card>
+
+<Card accent="#38bdf8" title="📦 Pod separado no Kubernetes">
+Deploy independente. Pode escalar, reiniciar e monitorar separadamente. Recomendado em produção. Ex: `Worker Service` .NET, `Spring Scheduler` Java.
+</Card>
+
+<Card accent="#66bb6a" title="📡 CDC — Debezium (sem código)">
+Kafka Connect lê o WAL do PostgreSQL/MySQL. Insert na outbox → evento no Kafka automaticamente. Nenhum loop no código — só configuração JSON do conector.
+</Card>
+
+</CardGrid>
+
+### Implementações do Relay
+
+**Opção 1 — Polling (mais comum, mais simples)**
+
+```text
+// loop que roda em background (thread, worker, job agendado)
+while true:
+    // 1. busca eventos não publicados
+    rows = SELECT * FROM outbox WHERE published = false
+    ORDER BY created_at LIMIT 100
+
+    for each row in rows:
+        // 2. publica no broker (Kafka, SQS, RabbitMQ...)
+        publish(row.event_type, row.payload)
+        // 3. marca como publicado
+        UPDATE outbox SET published = true
+        WHERE id = row.id
+
+    sleep(500ms) // intervalo entre polls
+```
+
+<Callout type="warn">
+Se publish falhar: não marca como published. Próximo ciclo tenta de novo → **at-least-once** garantido.
+</Callout>
+
+**Opção 2 — CDC com Debezium (zero polling, zero loop)**
+
+<Pipeline
+  steps={[
+    { label: "PostgreSQL WAL", note: "log de mudanças", kind: "req" },
+    { label: "Debezium Connector", note: "Kafka Connect", kind: "step" },
+    { label: "Kafka Topic", note: "orders.outbox", kind: "step" },
+    { label: "Consumidores", note: "outros serviços", kind: "res" },
+  ]}
+/>
+
+Debezium detecta qualquer INSERT na tabela outbox via WAL e transforma em evento Kafka. Nenhum código de polling necessário — só configuração do conector.
+
+**Comparação das abordagens**
+
+<ComparisonTable
+  head={["Critério", "Polling", "CDC / Debezium"]}
+  rows={[
+    ["Complexidade de código", "<strong style='color:#66bb6a'>Baixa</strong>", "<strong style='color:#66bb6a'>Quase zero</strong>"],
+    ["Latência", "<strong style='color:#fb923c'>Depende do sleep (100ms–5s)</strong>", "<strong style='color:#66bb6a'>Milissegundos</strong>"],
+    ["Infra extra", "<strong style='color:#66bb6a'>Nenhuma</strong>", "<strong style='color:#f87171'>Kafka Connect cluster</strong>"],
+    ["Carga no banco", "<strong style='color:#fb923c'>SELECT periódico</strong>", "<strong style='color:#66bb6a'>Lê WAL, não consulta</strong>"],
+    ["Quando usar", "Times pequenos, sem Kafka Connect", "Alta volumetria, já usa Kafka"],
+  ]}
+/>
+
+<CardGrid cols={2}>
+
+<Card accent="#fb923c" title="⚠️ Idempotência obrigatória">
+Outbox garante **at-least-once**. Consumidores devem ser idempotentes — mesmo evento chegando 2x não pode causar efeito duplicado.
+</Card>
+
+<Card accent="#a78bfa" title="🗄️ Schema da tabela outbox">
+`id` `aggregate_type` `aggregate_id` `event_type` `payload` `created_at` `published`
+</Card>
+
+</CardGrid>
+
+## CDC — Change Data Capture
+
+<Callout type="info">
+**Conceito:** CDC captura toda mudança no banco de dados (INSERT, UPDATE, DELETE) lendo diretamente o **log de transações** — sem queries adicionais. Qualquer app que assina esse stream recebe as mudanças em tempo real.
+</Callout>
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="📜 O que é o WAL / binlog?">
+Todo banco relacional mantém um log durável de todas as operações antes de aplicá-las — garante durabilidade (o D do ACID). CDC simplesmente *lê esse log* que já existe.
+
+`PostgreSQL → WAL` `MySQL → binlog` `SQL Server → CDC tables` `Oracle → redo log`
+</Card>
+
+<Card accent="#fb923c" title="🔌 Debezium">
+Conector open-source para Kafka Connect. Age como consumer do WAL e produz eventos Kafka para cada mudança. Suporta PostgreSQL, MySQL, MongoDB, SQL Server, Oracle.
+
+Empresa por trás: Red Hat. Muito usado em produção.
+</Card>
+
+<Card accent="#66bb6a" title="⚡ Por que é rápido?">
+Não faz SELECT no banco. Lê o WAL como stream binário. Latência de milissegundos entre o commit e o evento Kafka. Zero carga adicional de query no banco.
+</Card>
+
+</CardGrid>
+
+**Arquitetura completa com Debezium**
+
+<FlowDiagram
+  title="Arquitetura completa com Debezium"
+  rows={[
+    { box: "App Service", color: "#a78bfa", note: "faz INSERT normal" },
+    { box: "orders table", color: "#5f6882", indent: 1, note: "mesma transação" },
+    { box: "outbox table", color: "#fb923c", indent: 1 },
+    { box: "PostgreSQL escreve no WAL (Write-Ahead Log)", indent: 1, note: "automático — arquivo binário de todas as mudanças" },
+    { box: "Debezium", color: "#fb923c", note: "Kafka Connect — lê WAL continuamente (replication slot), detecta INSERT na outbox, transforma em JSON" },
+    { box: "Kafka Topic", color: "#38bdf8", note: "db.public.outbox" },
+    { box: "📦 Inventory Consumer", color: "#66bb6a", indent: 1 },
+    { box: "📧 Notification Consumer", color: "#66bb6a", indent: 1 },
+    { box: "📊 Analytics Consumer", color: "#66bb6a", indent: 1 },
+  ]}
+/>
+
+**Evento gerado pelo Debezium (exemplo)**
+
+```json
+{
+  "op": "c",          // c=create, u=update, d=delete
+  "ts_ms": 1718200000000,
+  "source": {
+    "db": "orders_db",
+    "table": "outbox"
+  },
+  "after": {          // estado depois do INSERT
+    "id": "abc-123",
+    "aggregate_type": "Order",
+    "event_type": "OrderCreated",
+    "payload": "{\"orderId\":\"abc-123\",\"total\":99.90}"
+  }
+}
+```
+
+**Cuidados com CDC**
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="🔒 Replication Slot (PostgreSQL)">
+Debezium precisa de um replication slot no Postgres. Se o consumer ficar parado por muito tempo, o WAL acumula e pode encher o disco. Monitorar `pg_replication_slots` é obrigatório.
+</Card>
+
+<Card accent="#38bdf8" title="🔁 Ordem garantida por partição">
+Debezium garante ordem dos eventos dentro de uma mesma tabela/partição Kafka. Entre tabelas diferentes não há garantia de ordem global.
+</Card>
+
+<Card accent="#66bb6a" title="🧪 Schema Registry">
+Com CDC em produção, use Confluent Schema Registry + Avro/Protobuf. Evita quebra de contrato quando schema da tabela muda.
+</Card>
+
+</CardGrid>
+
+## Kafka Connect Cluster
+
+<Callout type="info">
+**Kafka Connect** é um framework distribuído do ecossistema Kafka para mover dados *entre sistemas e o Kafka* de forma declarativa — sem escrever código de producer/consumer. Debezium roda *dentro* do Kafka Connect como um conector.
+</Callout>
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="🔌 O que é um Conector?">
+Plugin Java que sabe ler ou escrever em um sistema específico. Você configura via JSON — o Connect roda e gerencia.
+
+`Source Connector` lê de fora → publica no Kafka
+
+`Sink Connector` consome do Kafka → escreve em outro lugar
+</Card>
+
+<Card accent="#38bdf8" title="⚙️ Workers">
+Kafka Connect roda em **workers** — processos JVM. Workers formam um cluster. Conectores e tasks são distribuídos entre workers automaticamente. Se um worker cai, outro assume.
+</Card>
+
+<Card accent="#66bb6a" title="📋 Tasks">
+Um conector divide o trabalho em **tasks** paralelas. Debezium com 1 tabela = 1 task. Alta volumetria: múltiplas tasks em paralelo. Cada task roda numa thread do worker.
+</Card>
+
+</CardGrid>
+
+**Posição na arquitetura**
+
+<FlowDiagram
+  title="Posição na arquitetura"
+  rows={[
+    { box: "🗄 PostgreSQL", color: "#a78bfa", note: "fonte" },
+    { box: "🗄 MySQL", color: "#a78bfa" },
+    { box: "🗄 MongoDB", color: "#a78bfa" },
+    { box: "Worker 1 — Debezium task", color: "#38bdf8", indent: 1 },
+    { box: "Worker 2 — Debezium task", color: "#38bdf8", indent: 1 },
+    { box: "Worker 3 — standby", color: "#38bdf8", indent: 1, note: "estado salvo no próprio Kafka" },
+    { box: "📨 Kafka Broker — Topics", color: "#38bdf8", indent: 2 },
+    { box: "Elasticsearch", color: "#66bb6a", indent: 3, note: "destino (sink)" },
+    { box: "S3 / Data Lake", color: "#66bb6a", indent: 3 },
+    { box: "Outro serviço", color: "#66bb6a", indent: 3 },
+  ]}
+/>
+
+**Registrar conector Debezium — só um POST**
+
+```http
+POST /connectors HTTP/1.1
+Host: kafka-connect:8083
+
+{
+  "name": "outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "debezium",
+    "database.password": "secret",
+    "database.dbname": "orders_db",
+    "table.include.list": "public.outbox",  // só esta tabela
+    "topic.prefix": "orders",
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter"
+  }
+}
+```
+
+Após esse POST: Debezium começa a ler o WAL e publicar eventos. Nenhuma outra config necessária.
+
+**Modos de deploy**
+
+<CardGrid cols={3}>
+
+<Card accent="#a78bfa" title="🖥️ Standalone">
+1 worker, config em arquivo. Bom pra dev/teste local. Sem alta disponibilidade — se cai, para tudo.
+</Card>
+
+<Card accent="#38bdf8" title="🌐 Distributed (produção)">
+N workers no cluster. Estado dos conectores salvo em topics Kafka internos. Worker cai → outro assume as tasks em segundos. Gerenciado via REST API.
+</Card>
+
+<Card accent="#66bb6a" title="☁️ Managed (sem ops)">
+`Confluent Cloud` `AWS MSK Connect` `Aiven` oferecem Kafka Connect gerenciado. Só configura o conector — sem cluster pra operar.
+</Card>
+
+</CardGrid>

@@ -142,5 +142,271 @@
       "Design Patterns",
       "Resiliência"
     ]
+  },
+  {
+    "id": "microservicos#_",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Microsserviços",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#o-que-sao-microsservicos",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "O que são microsserviços?",
+    "anchor": "o-que-sao-microsservicos",
+    "text": "Cada serviço tem uma única responsabilidade, seu próprio processo e banco de dados. Comunicam via API ou mensageria. Times podem fazer deploy do serviço deles sem afetar outros. Menos risco, mais velocidade. Nenhum serviço acessa o banco do outro. Isso garante isolamento, mas torna transações distribuídas complexas. REST, gRPC, GraphQL (síncrono) ou eventos via Kafka/RabbitMQ (assíncrono). Contratos bem definidos.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#quando-usar",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Quando usar?",
+    "anchor": "quando-usar",
+    "text": "",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#trade-offs",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Trade-offs",
+    "anchor": "trade-offs",
+    "text": "✓ Escalabilidade independente por serviço ✓ Times autônomos e rápidos ✓ Falha isolada — um serviço cai, os outros vivem ✓ Tecnologias diferentes por serviço ✓ Deploy contínuo sem coordenação total ✗ Complexidade operacional alta (k8s, service mesh...) ✗ Latência de rede entre chamadas ✗ Transações distribuídas difíceis ✗ Observabilidade exige esforço (tracing distribuído) ✗ Consistência eventual — não imediata",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#exemplo-de-arquitetura",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Exemplo de arquitetura",
+    "anchor": "exemplo-de-arquitetura",
+    "text": "",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#saga-pattern",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Saga Pattern",
+    "anchor": "saga-pattern",
+    "text": "Transações ACID funcionam em um banco. Em microsserviços, cada serviço tem seu banco — não existe um BEGIN/COMMIT global. Como garantir consistência? Saga = sequência de transações locais. Cada passo publica um evento. Se um passo falha, executa transações compensatórias nos passos anteriores.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#saga-coreografada",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Saga Coreografada",
+    "anchor": "saga-coreografada",
+    "text": "Cada serviço reage a eventos — sem coordenador central. ⚡ Falha no Inventory → Compensação Simples, sem ponto central de falha, serviços totalmente desacoplados Difícil rastrear fluxo, risco de loops de eventos, sem visão global",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#saga-orquestrada",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Saga Orquestrada",
+    "anchor": "saga-orquestrada",
+    "text": "Orquestrador central coordena todos os passos. Fácil de debugar, visão centralizada, lógica explícita Ponto central de falha, acoplamento ao orquestrador, mais código",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#retry",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Retry",
+    "anchor": "retry",
+    "text": "Estratégias de backoff: 1s → 1s → 1s 1s → 2s → 4s → 8s 1s±rand → 2s±rand (evita thundering herd) Atenção: Retry só serve para falhas transitórias. Não retente erros 4xx (cliente errou). Defina max attempts e sempre use idempotency keys.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#circuit-breaker",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Circuit Breaker",
+    "anchor": "circuit-breaker",
+    "text": "threshold → bloqueia tudo. Retorna erro imediato. Protege o serviço.\" }, { box: \"🟡 HALF OPEN\", color: \" fb923c\", indent: 2, note: \"timeout → deixa passar poucas requisições. Testa se serviço voltou.\" }, ]} / Em caso de sucesso , o circuito volta para CLOSED. Bibliotecas populares: Resilience4j (Java) Polly (.NET) pybreaker (Python) opossum (Node.js)",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#outros-padroes-de-resiliencia",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Outros padrões de resiliência",
+    "anchor": "outros-padroes-de-resiliencia",
+    "text": "Isola recursos por cliente/funcionalidade. Thread pools separados. Falha num não afeta outros. Analogia: compartimentos do navio. Nunca espere indefinidamente. Defina timeouts em todas as chamadas externas. Evita cascata de bloqueios em toda a cadeia. Resposta degradada quando falha. Cache, valor default, mensagem genérica. Melhor experiência que erro puro. Endpoint /health e /ready . K8s usa pra decidir se manda tráfego. Falha aqui → pod reinicia ou sai do load balancer. Limita requisições por segundo/minuto por cliente. Protege contra abuso e sobrecarga. Token bucket ou sliding window . Istio, Linkerd. Retry, circuit breaker e observabilidade sem código. Infraestrutura cuida da resiliência no sidecar proxy.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#teorema-cap",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Teorema CAP",
+    "anchor": "teorema-cap",
+    "text": "Teorema: Um sistema distribuído só pode garantir 2 das 3 propriedades ao mesmo tempo. Todo read recebe o write mais recente ou um erro. Todos os nós veem os mesmos dados ao mesmo tempo. Toda requisição recebe resposta (não erro). O sistema sempre responde, mas pode não ter os dados mais recentes. Sistema continua operando mesmo com falha de comunicação entre nós. Em produção: P é obrigatório.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#na-pratica-p-e-sempre-necessario",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Na prática: P é sempre necessário",
+    "anchor": "na-pratica-p-e-sempre-necessario",
+    "text": "Redes falham. Partição de rede é inevitável. A escolha real é: CP vs AP Durante partição: bloqueia writes ou retorna erro. Dados sempre corretos, mas pode ficar indisponível. Exemplos: HBase Zookeeper etcd MongoDB (strong) Use quando: dados financeiros, transações, inventário exato Durante partição: responde com dados possivelmente desatualizados. Sempre disponível, consistência eventual. Exemplos: Cassandra DynamoDB CouchDB Riak Use quando: redes sociais, carrinho de compras, contadores, DNS",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#consistencia-eventual",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Consistência Eventual",
+    "anchor": "consistencia-eventual",
+    "text": "Neste intervalo: read no Node B pode retornar dado antigo. Isso é stale read . Aceitável em muitos contextos.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#outbox-pattern",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Outbox Pattern",
+    "anchor": "outbox-pattern",
+    "text": "Problema: Como garantir que um evento é publicado se e somente se a transação do banco for commitada? Não há two phase commit entre banco e message broker. 1. Salva no banco 2. Publica evento no Kafka 3. App crasha entre 1 e 2 → evento perdido para sempre 1. Salva dado + evento na mesma transação 2. Relay lê outbox e publica 3. At least once garantido",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#fluxo-do-outbox-pattern",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Fluxo do Outbox Pattern",
+    "anchor": "fluxo-do-outbox-pattern",
+    "text": "",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#o-que-e-o-relay",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "O que é o Relay?",
+    "anchor": "o-que-e-o-relay",
+    "text": "Relay é um processo/serviço independente (ou background thread) que fica em loop lendo a tabela outbox e publicando no broker. Não é necessariamente um console — pode assumir várias formas dependendo da stack. Roda dentro do próprio microsserviço como thread separada. Mais simples, mas acoplado ao processo principal. Se o serviço cai, o relay para junto. Deploy independente. Pode escalar, reiniciar e monitorar separadamente. Recomendado em produção. Ex: Worker Service .NET, Spring Scheduler Java. Kafka Connect lê o WAL do PostgreSQL/MySQL. Insert na outbox → evento no Kafka automaticamente. Nenhum loop no código — só configuração JSON do conector. Implementações do Relay Opção 1 — Polling (mais comum, mais simples) text // loop que roda em background (thread, worker, job agendado) while true: // 1. busca eventos não publicados rows = SELECT FROM outbox WHERE published = false ORDER BY created at LIMIT 100 for each row in rows: // 2. publica no broker (Kafka, SQS, RabbitMQ...) publish(row.event type, row.payload) // 3. marca como publicado UPDATE outbox SET published = true WHERE id = row.id sleep(500ms) // intervalo entre polls Se publish falhar: não marca como published. Próximo ciclo tenta de novo → at least once garantido. Opção 2 — CDC com Debezium (zero polling, zero loop) Debezium detecta qualquer INSERT na tabela outbox via WAL e transforma em evento Kafka. Nenhum código de polling necessário — só configuração do conector. Comparação das abordagens Baixa \", \" Quase zero \"], [\"Latência\", \" Depende do sleep (100ms–5s) \", \" Milissegundos \"], [\"Infra extra\", \" Nenhuma \", \" Kafka Connect cluster \"], [\"Carga no banco\", \" SELECT periódico \", \" Lê WAL, não consulta \"], [\"Quando usar\", \"Times pequenos, sem Kafka Connect\", \"Alta volumetria, já usa Kafka\"], ]} / Outbox garante at least once . Consumidores devem ser idempotentes — mesmo evento chegando 2x não pode causar efeito duplicado. id aggregate type aggregate id event type payload created at published",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#cdc-change-data-capture",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "CDC — Change Data Capture",
+    "anchor": "cdc-change-data-capture",
+    "text": "Conceito: CDC captura toda mudança no banco de dados (INSERT, UPDATE, DELETE) lendo diretamente o log de transações — sem queries adicionais. Qualquer app que assina esse stream recebe as mudanças em tempo real. Todo banco relacional mantém um log durável de todas as operações antes de aplicá las — garante durabilidade (o D do ACID). CDC simplesmente lê esse log que já existe. PostgreSQL → WAL MySQL → binlog SQL Server → CDC tables Oracle → redo log Conector open source para Kafka Connect. Age como consumer do WAL e produz eventos Kafka para cada mudança. Suporta PostgreSQL, MySQL, MongoDB, SQL Server, Oracle. Empresa por trás: Red Hat. Muito usado em produção. Não faz SELECT no banco. Lê o WAL como stream binário. Latência de milissegundos entre o commit e o evento Kafka. Zero carga adicional de query no banco. Arquitetura completa com Debezium Evento gerado pelo Debezium (exemplo) json { \"op\": \"c\", // c=create, u=update, d=delete \"ts ms\": 1718200000000, \"source\": { \"db\": \"orders db\", \"table\": \"outbox\" }, \"after\": { // estado depois do INSERT \"id\": \"abc 123\", \"aggregate type\": \"Order\", \"event type\": \"OrderCreated\", \"payload\": \"{\\\"orderId\\\":\\\"abc 123\\\",\\\"total\\\":99.90}\" } } Cuidados com CDC Debezium precisa de um replication slot no Postgres. Se o consumer ficar parado por muito tempo, o WAL acumula e pode encher o disco. Monitorar pg replication slots é obrigatório. Debezium garante ordem dos eventos dentro de uma mesma tabela/partição Kafka. Entre tabelas diferentes não há garantia de ordem global. Com CDC em produção, use Confluent Schema Registry + Avro/Protobuf. Evita quebra de contrato quando schema da tabela muda.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
+  },
+  {
+    "id": "microservicos#kafka-connect-cluster",
+    "slug": "microservicos",
+    "title": "Microsserviços",
+    "category": "architecture",
+    "section": "Kafka Connect Cluster",
+    "anchor": "kafka-connect-cluster",
+    "text": "Kafka Connect é um framework distribuído do ecossistema Kafka para mover dados entre sistemas e o Kafka de forma declarativa — sem escrever código de producer/consumer. Debezium roda dentro do Kafka Connect como um conector. Plugin Java que sabe ler ou escrever em um sistema específico. Você configura via JSON — o Connect roda e gerencia. Source Connector lê de fora → publica no Kafka Sink Connector consome do Kafka → escreve em outro lugar Kafka Connect roda em workers — processos JVM. Workers formam um cluster. Conectores e tasks são distribuídos entre workers automaticamente. Se um worker cai, outro assume. Um conector divide o trabalho em tasks paralelas. Debezium com 1 tabela = 1 task. Alta volumetria: múltiplas tasks em paralelo. Cada task roda numa thread do worker. Posição na arquitetura Registrar conector Debezium — só um POST http POST /connectors HTTP/1.1 Host: kafka connect:8083 { \"name\": \"outbox connector\", \"config\": { \"connector.class\": \"io.debezium.connector.postgresql.PostgresConnector\", \"database.hostname\": \"postgres\", \"database.port\": \"5432\", \"database.user\": \"debezium\", \"database.password\": \"secret\", \"database.dbname\": \"orders db\", \"table.include.list\": \"public.outbox\", // só esta tabela \"topic.prefix\": \"orders\", \"transforms\": \"outbox\", \"transforms.outbox.type\": \"io.debezium.transforms.outbox.EventRouter\" } } Após esse POST: Debezium começa a ler o WAL e publicar eventos. Nenhuma outra config necessária. Modos de deploy 1 worker, config em arquivo. Bom pra dev/teste local. Sem alta disponibilidade — se cai, para tudo. N workers no cluster. Estado dos conectores salvo em topics Kafka internos. Worker cai → outro assume as tasks em segundos. Gerenciado via REST API. Confluent Cloud AWS MSK Connect Aiven oferecem Kafka Connect gerenciado. Só configura o conector — sem cluster pra operar.",
+    "tags": [
+      "API Gateway",
+      "Circuit Breaker",
+      "Service Mesh"
+    ]
   }
 ]
