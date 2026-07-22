@@ -45,12 +45,68 @@ Pipeline event-driven e desacoplado. Cada caixa tem um comentário no hover:
     { box: "Portal (browser)", color: "#38bdf8", tip: "Pede a presigned URL a API, depois faz o PUT do arquivo direto no S3" },
     { box: "API — gera presigned URL", color: "#a78bfa", indent: 1, tip: "So assina a URL do S3. Nunca recebe o binario grande" },
     { box: "S3 (bucket de uploads)", color: "#fb923c", indent: 2, tip: "Aguenta GBs. PUT direto do browser, multipart para arquivos grandes" },
-    { box: "S3 Event -> EventBridge", color: "#fbbf24", indent: 3, tip: "ObjectCreated dispara o job automaticamente, sem polling" },
+    { box: "S3 Event -> EventBridge", color: "#fbbf24", indent: 3, tip: "S3 emite ObjectCreated (so metadados: bucket+key, nao o arquivo); EventBridge casa a regra e entrega na SQS. Sem polling" },
     { box: "SQS (fila de jobs)", color: "#f472b6", indent: 4, tip: "Desacopla upload de processamento. Absorve picos, at-least-once, DLQ" },
     { box: "Worker (ECS Fargate)", color: "#66bb6a", indent: 5, tip: "Consome a fila. Fargate roda >15min (limite do Lambda), escala por tarefa" },
     { box: "Aurora / RDS", color: "#f87171", indent: 6, tip: "Persiste as linhas via bulk COPY. Indexado para consulta paginada depois" },
   ]}
 />
+
+## Cada peça, passo a passo — o que é e o que faz
+
+Cada caixa do diagrama explicada: o que a peça **é** (fora do case) e o que ela **faz aqui**.
+
+### 1. Portal (browser) — onde o upload começa
+
+**O que é.** A tela web onde o usuário escolhe a planilha. Roda no navegador do usuário, não no servidor.
+
+**No case.** Antes de enviar o arquivo, pede à API uma *presigned URL* e faz o `PUT` do arquivo **direto no S3** com ela — o binário nunca passa pelo backend.
+
+### 2. Presigned URL — a chave temporária
+
+**O que é.** Uma URL comum do S3 + uma **assinatura** na query string que carrega a permissão embutida (ex: "pode fazer `PUT` neste objeto até 15:40"). Gerada com as credenciais da API, mas quem a usa (o browser) **não precisa de credencial AWS**.
+
+**No case.** Autoriza o browser a subir **um** arquivo específico, por tempo curto. Expira → link morto. É o que torna seguro o upload direto do browser pro S3.
+
+### 3. S3 (Simple Storage Service) — o armazém de arquivos
+
+**O que é.** *Object storage* da AWS: guarda arquivos (objetos) dentro de *buckets*, endereçados por uma *key* (ex: `jobs/abc/planilha.csv`). Não é disco nem banco — é key → blob via HTTP. Escala pra petabytes, durabilidade de 99.999999999% (11 noves).
+
+**No case.** Recebe a planilha via `PUT` direto do browser (multipart pra arquivos grandes). O arquivo **fica aqui**; o worker lê depois. Zero risco de encher disco de servidor.
+
+### 4. EventBridge — o roteador de eventos
+
+**O que é.** Um *event bus* (barramento de eventos) serverless. Serviços e apps **publicam eventos** nele; você cria **regras (rules)** que casam um padrão de evento e o entregam a um ou mais **targets** (SQS, Lambda, Step Functions...). É pub/sub gerenciado — o "carteiro" que ouve "aconteceu X" e avisa quem se importa. (Era o antigo CloudWatch Events.)
+
+**No case.** O S3 emite o evento `Object Created` (payload = **metadados**: bucket, key, tamanho — nunca o arquivo). Uma rule casa esse evento e o entrega na fila SQS. É o que dispara o processamento **sozinho**, sem ninguém ficar perguntando "já chegou?".
+
+### 5. SQS (Simple Queue Service) — a fila de trabalho
+
+**O que é.** Fila de mensagens gerenciada. Um lado **põe** mensagens, o outro **puxa** (poll) e processa. Desacopla produtor de consumidor: se o consumidor cai ou está lento, as mensagens **esperam** na fila em vez de se perder.
+
+**No case.** Guarda o job (`bucket` + `key`) até um worker pegar. Absorve picos (100 uploads juntos → 100 msgs na fila). Garante *at-least-once*; se o worker morre no meio, o *visibility timeout* devolve a msg pra fila; falha crônica cai na **DLQ**.
+
+### 6. ECS Fargate — onde o worker roda
+
+**O que é.** Um jeito de rodar *containers* sem gerenciar servidor. **ECS** é o orquestrador de containers da AWS; **Fargate** é o modo em que a AWS provisiona a CPU/RAM sob demanda (você não cuida de máquina EC2). "Serverless pra containers".
+
+**No case.** Roda o worker que consome a SQS e processa a planilha. Escolhido em vez de **Lambda** porque Lambda tem teto de **15 min** de execução e o SLA é 20 — Fargate roda o tempo que precisar.
+
+### 7. Aurora / RDS — o banco
+
+**O que é.** Banco **relacional** gerenciado. **RDS** roda Postgres/MySQL gerenciados pela AWS (backup, patch e réplica automáticos). **Aurora** é a versão própria da AWS, compatível com Postgres/MySQL, mais rápida e com storage que cresce sozinho.
+
+**No case.** Persiste o 1M de linhas via *bulk* `COPY` (não INSERT 1-a-1). Depois serve a consulta paginada (índice + paginação por cursor) das linhas cadastradas.
+
+### 8. CloudWatch — os olhos
+
+**O que é.** A stack de observabilidade nativa da AWS: **métricas**, **logs** e **alarmes**. Todo serviço AWS já emite métrica pra ele.
+
+**No case.** Mede duração do job, taxa de falha e tamanho da fila SQS. Um alarme dispara se o job passar do tempo ou a DLQ encher.
+
+<Callout type="tip">
+**Mini-glossário dos termos que aparecem:** *multipart upload* = subir o arquivo em pedaços paralelos e retomáveis. *Visibility timeout* = tempo que a msg fica "invisível" depois que um worker a pega; sem *ack*, ela reaparece na fila. *DLQ (dead-letter queue)* = fila-lixeira pras msgs que falharam N vezes. *Bulk insert / COPY* = gravar milhares de linhas numa tacada só. *Paginação por cursor (keyset)* = paginar por "depois do id X" em vez de `OFFSET` grande (que fica lento em 1M linhas).
+</Callout>
 
 ## Fluxo do upload
 
