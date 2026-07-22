@@ -1,0 +1,274 @@
+---
+title: "Testes"
+slug: testes
+category: backend
+icon: "🧪"
+accent: "#2dd4bf"
+description: "Pirâmide de testes: unitários, integração (todas as formas), E2E com Playwright/data-cy, Testcontainers, carga (k6/JMeter) e Vitest na prática."
+tags: [Vitest, Playwright, Testcontainers, k6, E2E]
+order: 8
+updated: 2026-07-22
+---
+
+## A Pirâmide de Testes
+
+A pirâmide organiza os testes por **escopo × custo × quantidade**. Na base, muitos testes rápidos e baratos; no topo, poucos testes lentos e caros, porém de alta confiança. A regra é simples: **quanto mais alto, menos testes** — porque cada nível acima é mais lento, mais frágil e mais custoso de manter.
+
+<FlowDiagram
+  title="ESCOPO CRESCE PRA CIMA — QUANTIDADE PRA BAIXO"
+  rows={[
+    { box: "E2E", color: "#f87171", note: "poucos, lentos, alta confiança — fluxo do usuário" },
+    { box: "Integração", color: "#fbbf24", indent: 1, note: "componentes reais colaborando (DB, broker, API)" },
+    { box: "Unitários", color: "#2dd4bf", indent: 2, note: "muitos, rápidos, isolados — a base" },
+  ]}
+/>
+
+<ComparisonTable
+  head={["Nível", "Escopo", "Velocidade", "Quantidade", "Confiança"]}
+  rows={[
+    ["<strong style='color:#2dd4bf'>Unitário</strong>", "1 unidade isolada", "ms — muito rápido", "Muitos (70%)", "Baixa (localizada)"],
+    ["<strong style='color:#fbbf24'>Integração</strong>", "Vários componentes juntos", "Segundos", "Médio (20%)", "Média"],
+    ["<strong style='color:#f87171'>E2E</strong>", "Sistema inteiro + UI", "Segundos a minutos", "Poucos (10%)", "Alta (real)"],
+  ]}
+/>
+
+<Callout type="warn">
+**Anti-padrões.** O **cone de sorvete** (muitos E2E, poucos unitários) deixa a suíte lenta e instável. A **ampulheta** (muito unitário e E2E, pouca integração) esconde bugs de colaboração entre componentes. Busque o equilíbrio da pirâmide.
+</Callout>
+
+## Testes Unitários
+
+Testam **uma unidade isolada** — uma função ou classe — sem tocar em I/O real (banco, rede, disco). Dependências externas viram **test doubles** (mock, stub, fake). São a base: rápidos, determinísticos e apontam o erro com precisão.
+
+Guie-se pelo **FIRST**: **F**ast, **I**ndependent, **R**epeatable, **S**elf-validating, **T**imely. E estruture com **AAA** — Arrange, Act, Assert.
+
+```typescript
+import { describe, it, expect, vi } from "vitest";
+import { calcularFrete } from "./frete";
+
+describe("calcularFrete", () => {
+  it("aplica frete gratis acima de R$200", () => {
+    // Arrange
+    const pedido = { subtotal: 250, regiao: "SP" };
+    // Act
+    const frete = calcularFrete(pedido);
+    // Assert
+    expect(frete).toBe(0);
+  });
+
+  it("cota no gateway quando abaixo do minimo", () => {
+    const gateway = { cotar: vi.fn().mockReturnValue(19.9) };
+    calcularFrete({ subtotal: 50, regiao: "RJ" }, gateway);
+    expect(gateway.cotar).toHaveBeenCalledOnce();
+  });
+});
+```
+
+<Callout type="tip">
+**Teste comportamento, não implementação.** Verifique o resultado observável (retorno, efeito), não os detalhes internos. Testes acoplados à implementação quebram a cada refactor — mesmo quando o comportamento continua correto.
+</Callout>
+
+## Testes de Integração
+
+Verificam a **colaboração entre componentes** com as dependências **reais** (ou o mais próximo disso): o repositório contra um banco de verdade, o consumidor contra um broker de verdade. Pegam o que o unitário não pega — mapeamento ORM, SQL, serialização, contratos de rede.
+
+O usuário pediu "todas as possibilidades" — as principais formas de integração:
+
+<CardGrid cols={2}>
+  <Card accent="#38bdf8" title="Componente ↔ Banco">
+    Repositório/ORM contra um DB real (Postgres, Mongo). Valida schema, queries, migrations, transações. Enabler: Testcontainers.
+  </Card>
+  <Card accent="#a78bfa" title="API endpoint (in-process)">
+    Sobe a app em memória (ex.: <code>WebApplicationFactory</code> no .NET, <code>supertest</code> no Node) e bate no endpoint: controller → service → repo.
+  </Card>
+  <Card accent="#fb923c" title="Serviço ↔ Mensageria">
+    Produtor publica, consumidor processa, contra um Kafka/RabbitMQ real. Valida serialização, tópicos, DLQ, idempotência.
+  </Card>
+  <Card accent="#f472b6" title="Serviço ↔ API externa">
+    Contra um mock server (WireMock) ou <strong>contract testing</strong> (Pact) — garante que consumidor e provedor concordam no contrato sem acoplar deploys.
+  </Card>
+  <Card accent="#2dd4bf" title="Cache / Fila / Storage">
+    Redis, S3, filas — contra o serviço real em container. Valida TTL, invalidação, chaves.
+  </Card>
+  <Card accent="#66bb6a" title="Módulo ↔ Módulo">
+    Dois módulos internos reais colaborando, sem mocks entre eles — pega bugs de fronteira que o unitário mocka e esconde.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Mock vs dependência real.** Mockar tudo torna o teste de integração inútil (vira unitário disfarçado). A regra: mocke o que está **fora** do seu controle e é caro/instável (uma API de terceiro), use **real** o que você controla e é containerizável (seu banco, seu broker).
+</Callout>
+
+## Testcontainers
+
+Sobe **dependências reais em containers Docker efêmeros** durante o teste — Postgres, Kafka, Redis, Elasticsearch — e destrói tudo no fim. Isolamento total, fidelidade com produção e zero "funciona na minha máquina": cada suíte roda contra a versão exata da prod.
+
+```csharp
+// Testcontainers para .NET — Postgres real, efemero, por teste
+await using var pg = new PostgreSqlBuilder()
+    .WithImage("postgres:16-alpine")
+    .Build();
+
+await pg.StartAsync();                       // sobe o container
+
+await using var conn = new NpgsqlConnection(pg.GetConnectionString());
+await conn.OpenAsync();
+// roda migrations + testa o repositorio contra o Postgres REAL
+// no fim do teste o container e destruido automaticamente (Dispose)
+```
+
+<Callout type="tip">
+**Fidelidade > velocidade (com moderação).** Testcontainers é mais lento que um banco em memória (SQLite/H2), mas testa contra o **mesmo** engine da produção — pega dialeto SQL, tipos e comportamentos que o in-memory mascara. Use in-memory para o unitário; Testcontainers para a integração que importa.
+</Callout>
+
+## Testes E2E
+
+**End-to-end** exercitam o sistema inteiro do ponto de vista do usuário: a aplicação real rodando, banco real, navegador real, clicando na tela. Dão a **maior confiança** (é o caminho que o usuário faz), mas são os mais lentos, caros e propensos a **flakiness**. Poucos e bem escolhidos — os fluxos críticos (login, checkout, cadastro).
+
+<Callout type="warn">
+**Flaky é o inimigo do E2E.** Testes que ora passam ora falham sem mudança de código destroem a confiança na suíte. Combata com: esperas explícitas (nunca <code>sleep</code> fixo), seletores estáveis (<code>data-cy</code>), isolamento de dados por teste e retries controlados.
+</Callout>
+
+## Playwright e data-cy
+
+**Playwright** automatiza o navegador (Chromium, Firefox, WebKit) com **auto-wait** embutido — espera o elemento ficar pronto antes de agir, o que reduz flakiness. Rápido, paralelo e com trace viewer pra depurar.
+
+**`data-cy`** é a convenção (popularizada pelo Cypress) de marcar elementos com um atributo dedicado a testes — desacopla o seletor do CSS/texto, que mudam por design. No Playwright você configura `testIdAttribute: "data-cy"` e usa `getByTestId`:
+
+```typescript
+// playwright.config.ts  ->  use: { testIdAttribute: "data-cy" }
+import { test, expect } from "@playwright/test";
+
+test("usuario faz login e ve o dashboard", async ({ page }) => {
+  await page.goto("/login");
+  await page.getByTestId("email").fill("elise@exemplo.com");
+  await page.getByTestId("senha").fill("secret");
+  await page.getByTestId("entrar").click();          // <button data-cy="entrar">
+  await expect(page.getByTestId("dashboard")).toBeVisible();
+});
+```
+
+No markup, o elemento carrega o atributo estável:
+
+```html
+<button data-cy="entrar">Entrar</button>
+```
+
+<Callout type="info">
+**Seletor estável > seletor frágil.** `getByTestId("entrar")` sobrevive a mudanças de layout, classe CSS e texto. Já `.btn.btn-primary > span:nth-child(2)` quebra no primeiro ajuste de design. `data-cy` é contrato explícito entre dev e teste.
+</Callout>
+
+## Testes de Carga
+
+Medem o comportamento do sistema **sob volume**: quantas requisições aguenta, qual a latência sob pressão, onde quebra. Tipos:
+
+<ComparisonTable
+  head={["Tipo", "O que mede"]}
+  rows={[
+    ["<strong style='color:#2dd4bf'>Load</strong>", "Comportamento sob carga esperada / normal"],
+    ["<strong style='color:#fbbf24'>Stress</strong>", "Empurra ate quebrar — acha o teto"],
+    ["<strong style='color:#fb923c'>Spike</strong>", "Pico subito de trafego (Black Friday)"],
+    ["<strong style='color:#f87171'>Soak / Endurance</strong>", "Carga sustentada por horas — vazamentos de memoria"],
+  ]}
+/>
+
+Métricas que importam: **throughput** (req/s), **latência** (p95/p99, não a média — a média mente), e **taxa de erro**.
+
+### k6
+
+Script em JavaScript, focado em desenvolvedor, roda no CI. Define carga por **VUs** (virtual users) e **thresholds** que fazem o teste passar/falhar:
+
+```javascript
+import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  stages: [
+    { duration: "30s", target: 50 }, // ramp-up ate 50 VUs
+    { duration: "1m", target: 50 },  // sustenta
+    { duration: "30s", target: 0 },  // ramp-down
+  ],
+  thresholds: {
+    http_req_duration: ["p(95)<500"], // 95% abaixo de 500ms
+    http_req_failed: ["rate<0.01"],   // menos de 1% de erro
+  },
+};
+
+export default function () {
+  const res = http.get("https://api.exemplo.com/pedidos");
+  check(res, { "status 200": (r) => r.status === 200 });
+  sleep(1);
+}
+```
+
+### JMeter
+
+Ferramenta madura da Apache, baseada em GUI (planos de teste em XML). Organiza carga em **Thread Groups**, requisições em **Samplers** e resultados em **Listeners**. Rico em protocolos (HTTP, JDBC, JMS, gRPC) e plugins.
+
+<ComparisonTable
+  head={["Aspecto", "k6", "JMeter"]}
+  rows={[
+    ["Definição", "Script JS (as-code)", "GUI + XML"],
+    ["Público", "Desenvolvedor / CI", "QA / performance"],
+    ["Curva", "Baixa pra quem sabe JS", "GUI acessível, XML verboso"],
+    ["Protocolos", "HTTP, gRPC, WebSocket", "HTTP, JDBC, JMS, LDAP, muitos"],
+    ["Recursos", "Leve, eficiente", "Mais pesado (JVM)"],
+  ]}
+/>
+
+<Callout type="warn">
+**Carga não roda em produção.** Teste de carga contra prod pode derrubar o serviço real. Rode em ambiente isolado equivalente, ou com muito cuidado e feature flags. E sempre num ponto do dia de baixo tráfego.
+</Callout>
+
+## Vitest na Prática
+
+**Vitest** é o runner rápido nativo do ecossistema **Vite**: ESM e TypeScript sem config, API compatível com Jest (`describe`/`it`/`expect`), watch mode instantâneo (HMR pros testes) e coverage integrado. Mocks com `vi.fn()` / `vi.mock()`.
+
+```typescript
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { NotificadorPedido } from "./notificador";
+
+describe("NotificadorPedido", () => {
+  const email = { enviar: vi.fn() };
+  beforeEach(() => vi.clearAllMocks());
+
+  it("notifica o cliente ao confirmar o pedido", () => {
+    const notificador = new NotificadorPedido(email);
+    notificador.confirmar({ id: "PED-1", cliente: "elise@x.com" });
+
+    expect(email.enviar).toHaveBeenCalledWith(
+      "elise@x.com",
+      expect.stringContaining("PED-1"),
+    );
+  });
+});
+```
+
+Rode com `vitest` (watch) ou `vitest run` (CI, uma passada). Coverage: `vitest run --coverage`.
+
+<Callout type="tip">
+**Este hub usa Vitest.** Os testes do próprio Mendez Tech Hub (loader de conteúdo, engine de busca, componentes MDX) rodam em Vitest + Testing Library — a mesma stack descrita aqui, comprovada no `npm run build` que gera o site.
+</Callout>
+
+## Boas Práticas
+
+<CardGrid cols={2}>
+  <Card accent="#2dd4bf" title="Pirâmide, não cone">
+    Base larga de unitários, camada média de integração, topo enxuto de E2E. Suíte rápida = suíte que roda a cada commit.
+  </Card>
+  <Card accent="#38bdf8" title="Comportamento > implementação">
+    Teste o que a unidade faz, não como. Sobrevive a refactors.
+  </Card>
+  <Card accent="#f87171" title="Mate a flakiness">
+    Auto-wait, seletores <code>data-cy</code>, dados isolados por teste, zero <code>sleep</code> fixo.
+  </Card>
+  <Card accent="#fbbf24" title="Coverage é sinal, não meta">
+    100% de cobertura com asserts fracos não vale nada. Cubra os caminhos de risco.
+  </Card>
+  <Card accent="#a78bfa" title="Determinístico e independente">
+    Ordem não importa, sem estado compartilhado, sem dependência de rede não controlada.
+  </Card>
+  <Card accent="#66bb6a" title="CI como portão">
+    Testes verdes bloqueiam o merge. Carga e E2E em pipelines dedicados (mais lentos).
+  </Card>
+</CardGrid>

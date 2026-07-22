@@ -1,0 +1,184 @@
+---
+title: "Observabilidade"
+slug: observabilidade
+category: infra
+icon: "🔭"
+accent: "#818cf8"
+description: "Os 3 pilares (logs, métricas, traces), telemetria com OpenTelemetry, SLIs/SLOs e as ferramentas mais usadas (Prometheus, Grafana, Jaeger, ELK, Datadog)."
+tags: [Logs, Métricas, Tracing, OpenTelemetry, SLO]
+order: 9
+updated: 2026-07-22
+---
+
+## O que é Observabilidade
+
+Observabilidade é a capacidade de **entender o estado interno de um sistema pelos seus outputs externos** — sem precisar fazer deploy de código novo pra investigar. Um sistema é observável quando você consegue responder perguntas que **não previu** quando o construiu.
+
+<Callout type="info">
+**Monitoring ≠ Observability.** *Monitoring* responde perguntas **conhecidas** ("a CPU passou de 80%?") com dashboards e alertas pré-definidos. *Observability* te dá dados ricos o bastante pra investigar o **desconhecido** ("por que ESTE cliente, nesta região, teve 3s de latência às 2h da manhã?"). Monitoring é um subconjunto — você monitora o que já sabe que importa; observa pra descobrir o que não sabia.
+</Callout>
+
+## Os 3 Pilares
+
+Logs, **métricas** e **traces** — juntos dão a visão completa. Cada um responde uma pergunta diferente:
+
+<ComparisonTable
+  head={["Pilar", "O que é", "Pergunta que responde", "Custo"]}
+  rows={[
+    ["<strong style='color:#fbbf24'>Logs</strong>", "Eventos discretos com timestamp", "O que exatamente aconteceu aqui?", "Alto (volume)"],
+    ["<strong style='color:#66bb6a'>Métricas</strong>", "Números agregados no tempo", "Quantos? Quão rápido? Está piorando?", "Baixo (barato)"],
+    ["<strong style='color:#38bdf8'>Traces</strong>", "Jornada de 1 request entre serviços", "Onde o tempo foi gasto? Quem chamou quem?", "Médio (sampling)"],
+  ]}
+/>
+
+### Logs
+
+Registros **discretos e imutáveis** de eventos, com timestamp. Ricos em contexto, mas caros em volume. A prática moderna é **structured logging** — JSON em vez de texto solto — pra poder filtrar, agregar e **correlacionar** por um `trace_id`:
+
+```json
+{
+  "timestamp": "2026-07-22T14:03:11Z",
+  "level": "ERROR",
+  "service": "pedidos-api",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "message": "falha ao debitar estoque",
+  "order_id": "PED-1234",
+  "err": "timeout no servico de estoque"
+}
+```
+
+Ferramentas: **ELK** (Elasticsearch + Logstash + Kibana), **Grafana Loki**, **Fluentd/Fluent Bit**, **Splunk**.
+
+### Métricas
+
+Valores **numéricos agregados** ao longo do tempo (séries temporais). Baratas de armazenar e ideais para dashboards e alertas. Os tipos fundamentais:
+
+<CardGrid cols={3}>
+  <Card accent="#66bb6a" title="Counter">
+    Só sobe (ou zera no restart). Ex.: total de requisições, erros.
+  </Card>
+  <Card accent="#38bdf8" title="Gauge">
+    Sobe e desce. Ex.: uso de memória, conexões ativas, fila.
+  </Card>
+  <Card accent="#a78bfa" title="Histogram">
+    Distribuição em buckets. Ex.: latência p50/p95/p99.
+  </Card>
+</CardGrid>
+
+```text
+# HELP http_requests_total Total de requisicoes HTTP
+# TYPE http_requests_total counter
+http_requests_total{method="GET",route="/pedidos",status="200"} 14827
+
+# PromQL: taxa de erro 5xx nos ultimos 5 minutos
+rate(http_requests_total{status=~"5.."}[5m])
+```
+
+Ferramentas: **Prometheus** (coleta pull + PromQL), **Grafana** (dashboards), **StatsD**, **VictoriaMetrics**.
+
+### Traces
+
+Seguem **uma única requisição** atravessando vários serviços. Cada etapa é um **span** (com duração), ligados em árvore por `parent/child` sob um mesmo `trace_id`. Revelam latência distribuída e o gargalo exato:
+
+<FlowDiagram
+  title="TRACE — SPANS DE UMA REQUISICAO"
+  rows={[
+    { box: "API Gateway (120ms)", color: "#818cf8", note: "span raiz" },
+    { box: "pedidos-api (95ms)", color: "#38bdf8", indent: 1 },
+    { box: "estoque-svc (60ms)", color: "#fb923c", indent: 2, note: "gargalo — 63% do tempo total" },
+    { box: "postgres query (12ms)", color: "#66bb6a", indent: 2 },
+  ]}
+/>
+
+Ferramentas: **Jaeger**, **Grafana Tempo**, **Zipkin**.
+
+## OpenTelemetry
+
+**OpenTelemetry (OTel)** é o padrão aberto e **vendor-neutral** para instrumentar os três pilares. Uma única instrumentação no código (SDK) exporta via protocolo **OTLP** para qualquer backend — troque o Jaeger pelo Datadog sem mexer no código. Virou o padrão de fato e elimina o **vendor lock-in**.
+
+Componentes: **SDK/API** (instrumenta a app), **Collector** (recebe, processa, roteia telemetria) e **exporters** (mandam pro backend).
+
+```csharp
+// instrumenta traces + metricas e exporta via OTLP pro Collector
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService("pedidos-api"))
+    .WithTracing(t => t
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddOtlpExporter())          // -> Collector -> Jaeger / Tempo / Datadog
+    .WithMetrics(m => m
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddOtlpExporter());
+```
+
+<Callout type="tip">
+**Auto + manual.** A instrumentação automática (ASP.NET Core, HttpClient, EF Core) cobre o grosso sem esforço. Adicione spans manuais só nos pontos de negócio que importam ("cobrança do cartão", "cálculo de frete") pra enriquecer o trace.
+</Callout>
+
+## Ferramentas Mais Usadas
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" pill="Métricas" title="Prometheus + Grafana">
+    O par padrão de mercado. Prometheus coleta e guarda séries temporais (pull + PromQL); Grafana visualiza (dashboards multi-source). Alertas via Alertmanager.
+  </Card>
+  <Card accent="#fbbf24" pill="Logs" title="ELK / Loki">
+    ELK (Elasticsearch/Logstash/Kibana) é o clássico de busca em logs. Loki é o "Prometheus dos logs" — mais leve, indexa por labels, casa com Grafana.
+  </Card>
+  <Card accent="#38bdf8" pill="Traces" title="Jaeger / Tempo / Zipkin">
+    Backends de tracing distribuído. Jaeger (CNCF) e Tempo (Grafana) recebem OTLP e mostram a árvore de spans.
+  </Card>
+  <Card accent="#818cf8" pill="Padrão" title="OpenTelemetry">
+    A camada de instrumentação vendor-neutral que alimenta todos os outros. Não é backend — é o "cano" padronizado.
+  </Card>
+  <Card accent="#f472b6" pill="SaaS / APM" title="Datadog · New Relic · Dynatrace">
+    Plataformas all-in-one (métricas + logs + traces + APM + alertas) gerenciadas. Menos operação, mais custo por volume.
+  </Card>
+  <Card accent="#f87171" pill="Erros" title="Sentry">
+    Foco em error tracking e performance de aplicação — captura exceções com stack, contexto e release, direto do código.
+  </Card>
+</CardGrid>
+
+## Conceitos-Chave
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" title="Golden Signals">
+    Os 4 sinais do Google SRE: <strong>Latência</strong>, <strong>Tráfego</strong>, <strong>Erros</strong>, <strong>Saturação</strong>. Se só puder medir 4 coisas, meça essas.
+  </Card>
+  <Card accent="#38bdf8" title="RED e USE">
+    <strong>RED</strong> (Rate, Errors, Duration) pra serviços. <strong>USE</strong> (Utilization, Saturation, Errors) pra recursos (CPU, disco, fila).
+  </Card>
+  <Card accent="#a78bfa" title="SLI / SLO / SLA">
+    <strong>SLI</strong> = a métrica (ex.: % de req &lt; 300ms). <strong>SLO</strong> = a meta interna (99,9%). <strong>SLA</strong> = o contrato com o cliente (com multa). Nessa ordem de rigor.
+  </Card>
+  <Card accent="#fbbf24" title="Error Budget">
+    O oposto do SLO: 99,9% de meta = 0,1% de "orçamento de falha". Gastou o budget? Congela features, foca em confiabilidade.
+  </Card>
+  <Card accent="#fb923c" title="Sampling">
+    Guardar 100% dos traces é caro. Amostragem (head/tail) mantém o custo sob controle sem perder os traces que importam (erros, lentos).
+  </Card>
+  <Card accent="#f87171" title="Cardinalidade">
+    Cada combinação de labels vira uma série. Label de alta cardinalidade (ex.: <code>user_id</code>) explode o custo/memória das métricas. Evite.
+  </Card>
+</CardGrid>
+
+## Boas Práticas
+
+<Callout type="warn">
+**Nunca logue dados sensíveis.** Senha, token, cartão, CPF, PII — logs são replicados, indexados e retidos por muito tempo. Mascare ou nunca capture. Um `trace_id` correlaciona sem expor o dado do cliente.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#818cf8" title="Structured + correlação">
+    Logs em JSON com <code>trace_id</code> propagado entre serviços. Pular do log ao trace ao métrica com um clique.
+  </Card>
+  <Card accent="#66bb6a" title="Instrumente desde o dia 1">
+    Observabilidade retrofit é dor. OTel automático custa pouco e paga na primeira madrugada de incidente.
+  </Card>
+  <Card accent="#fbbf24" title="Alerte em sintomas, não causas">
+    Alerte no que o usuário sente (latência, erro), não em cada métrica interna. Alerta demais = <strong>alert fatigue</strong> = ninguém olha.
+  </Card>
+  <Card accent="#f472b6" title="SLO-driven">
+    Deixe os SLOs guiarem alertas e prioridade. Alerte quando o error budget está queimando rápido, não a cada blip.
+  </Card>
+</CardGrid>

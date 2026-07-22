@@ -942,5 +942,277 @@
       "RS256",
       "Claims"
     ]
+  },
+  {
+    "id": "testes#_",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testes",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#a-piramide-de-testes",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "A Pirâmide de Testes",
+    "anchor": "a-piramide-de-testes",
+    "text": "A pirâmide organiza os testes por escopo × custo × quantidade . Na base, muitos testes rápidos e baratos; no topo, poucos testes lentos e caros, porém de alta confiança. A regra é simples: quanto mais alto, menos testes — porque cada nível acima é mais lento, mais frágil e mais custoso de manter. Unitário \", \"1 unidade isolada\", \"ms — muito rápido\", \"Muitos (70%)\", \"Baixa (localizada)\"], [\" Integração \", \"Vários componentes juntos\", \"Segundos\", \"Médio (20%)\", \"Média\"], [\" E2E \", \"Sistema inteiro + UI\", \"Segundos a minutos\", \"Poucos (10%)\", \"Alta (real)\"], ]} / Anti padrões. O cone de sorvete (muitos E2E, poucos unitários) deixa a suíte lenta e instável. A ampulheta (muito unitário e E2E, pouca integração) esconde bugs de colaboração entre componentes. Busque o equilíbrio da pirâmide.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#testes-unitarios",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testes Unitários",
+    "anchor": "testes-unitarios",
+    "text": "Testam uma unidade isolada — uma função ou classe — sem tocar em I/O real (banco, rede, disco). Dependências externas viram test doubles (mock, stub, fake). São a base: rápidos, determinísticos e apontam o erro com precisão. Guie se pelo FIRST : F ast, I ndependent, R epeatable, S elf validating, T imely. E estruture com AAA — Arrange, Act, Assert. typescript import { describe, it, expect, vi } from \"vitest\"; import { calcularFrete } from \"./frete\"; describe(\"calcularFrete\", () = { it(\"aplica frete gratis acima de R$200\", () = { // Arrange const pedido = { subtotal: 250, regiao: \"SP\" }; // Act const frete = calcularFrete(pedido); // Assert expect(frete).toBe(0); }); it(\"cota no gateway quando abaixo do minimo\", () = { const gateway = { cotar: vi.fn().mockReturnValue(19.9) }; calcularFrete({ subtotal: 50, regiao: \"RJ\" }, gateway); expect(gateway.cotar).toHaveBeenCalledOnce(); }); }); Teste comportamento, não implementação. Verifique o resultado observável (retorno, efeito), não os detalhes internos. Testes acoplados à implementação quebram a cada refactor — mesmo quando o comportamento continua correto.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#testes-de-integracao",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testes de Integração",
+    "anchor": "testes-de-integracao",
+    "text": "Verificam a colaboração entre componentes com as dependências reais (ou o mais próximo disso): o repositório contra um banco de verdade, o consumidor contra um broker de verdade. Pegam o que o unitário não pega — mapeamento ORM, SQL, serialização, contratos de rede. O usuário pediu \"todas as possibilidades\" — as principais formas de integração: Repositório/ORM contra um DB real (Postgres, Mongo). Valida schema, queries, migrations, transações. Enabler: Testcontainers. Sobe a app em memória (ex.: WebApplicationFactory no .NET, supertest no Node) e bate no endpoint: controller → service → repo. Produtor publica, consumidor processa, contra um Kafka/RabbitMQ real. Valida serialização, tópicos, DLQ, idempotência. Contra um mock server (WireMock) ou contract testing (Pact) — garante que consumidor e provedor concordam no contrato sem acoplar deploys. Redis, S3, filas — contra o serviço real em container. Valida TTL, invalidação, chaves. Dois módulos internos reais colaborando, sem mocks entre eles — pega bugs de fronteira que o unitário mocka e esconde. Mock vs dependência real. Mockar tudo torna o teste de integração inútil (vira unitário disfarçado). A regra: mocke o que está fora do seu controle e é caro/instável (uma API de terceiro), use real o que você controla e é containerizável (seu banco, seu broker).",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#testcontainers",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testcontainers",
+    "anchor": "testcontainers",
+    "text": "Sobe dependências reais em containers Docker efêmeros durante o teste — Postgres, Kafka, Redis, Elasticsearch — e destrói tudo no fim. Isolamento total, fidelidade com produção e zero \"funciona na minha máquina\": cada suíte roda contra a versão exata da prod. csharp // Testcontainers para .NET — Postgres real, efemero, por teste await using var pg = new PostgreSqlBuilder() .WithImage(\"postgres:16 alpine\") .Build(); await pg.StartAsync(); // sobe o container await using var conn = new NpgsqlConnection(pg.GetConnectionString()); await conn.OpenAsync(); // roda migrations + testa o repositorio contra o Postgres REAL // no fim do teste o container e destruido automaticamente (Dispose) Fidelidade velocidade (com moderação). Testcontainers é mais lento que um banco em memória (SQLite/H2), mas testa contra o mesmo engine da produção — pega dialeto SQL, tipos e comportamentos que o in memory mascara. Use in memory para o unitário; Testcontainers para a integração que importa.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#testes-e2e",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testes E2E",
+    "anchor": "testes-e2e",
+    "text": "End to end exercitam o sistema inteiro do ponto de vista do usuário: a aplicação real rodando, banco real, navegador real, clicando na tela. Dão a maior confiança (é o caminho que o usuário faz), mas são os mais lentos, caros e propensos a flakiness . Poucos e bem escolhidos — os fluxos críticos (login, checkout, cadastro). Flaky é o inimigo do E2E. Testes que ora passam ora falham sem mudança de código destroem a confiança na suíte. Combata com: esperas explícitas (nunca sleep fixo), seletores estáveis ( data cy ), isolamento de dados por teste e retries controlados.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#playwright-e-data-cy",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Playwright e data-cy",
+    "anchor": "playwright-e-data-cy",
+    "text": "Playwright automatiza o navegador (Chromium, Firefox, WebKit) com auto wait embutido — espera o elemento ficar pronto antes de agir, o que reduz flakiness. Rápido, paralelo e com trace viewer pra depurar. data cy é a convenção (popularizada pelo Cypress) de marcar elementos com um atributo dedicado a testes — desacopla o seletor do CSS/texto, que mudam por design. No Playwright você configura testIdAttribute: \"data cy\" e usa getByTestId : typescript // playwright.config.ts use: { testIdAttribute: \"data cy\" } import { test, expect } from \"@playwright/test\"; test(\"usuario faz login e ve o dashboard\", async ({ page }) = { await page.goto(\"/login\"); await page.getByTestId(\"email\").fill(\"elise@exemplo.com\"); await page.getByTestId(\"senha\").fill(\"secret\"); await page.getByTestId(\"entrar\").click(); // await expect(page.getByTestId(\"dashboard\")).toBeVisible(); }); No markup, o elemento carrega o atributo estável: html Entrar Seletor estável seletor frágil. getByTestId(\"entrar\") sobrevive a mudanças de layout, classe CSS e texto. Já .btn.btn primary span:nth child(2) quebra no primeiro ajuste de design. data cy é contrato explícito entre dev e teste.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#testes-de-carga",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Testes de Carga",
+    "anchor": "testes-de-carga",
+    "text": "Medem o comportamento do sistema sob volume : quantas requisições aguenta, qual a latência sob pressão, onde quebra. Tipos: Load \", \"Comportamento sob carga esperada / normal\"], [\" Stress \", \"Empurra ate quebrar — acha o teto\"], [\" Spike \", \"Pico subito de trafego (Black Friday)\"], [\" Soak / Endurance \", \"Carga sustentada por horas — vazamentos de memoria\"], ]} / Métricas que importam: throughput (req/s), latência (p95/p99, não a média — a média mente), e taxa de erro . k6 Script em JavaScript, focado em desenvolvedor, roda no CI. Define carga por VUs (virtual users) e thresholds que fazem o teste passar/falhar: javascript import http from \"k6/http\"; import { check, sleep } from \"k6\"; export const options = { stages: [ { duration: \"30s\", target: 50 }, // ramp up ate 50 VUs { duration: \"1m\", target: 50 }, // sustenta { duration: \"30s\", target: 0 }, // ramp down ], thresholds: { http req duration: [\"p(95) r.status === 200 }); sleep(1); } JMeter Ferramenta madura da Apache, baseada em GUI (planos de teste em XML). Organiza carga em Thread Groups , requisições em Samplers e resultados em Listeners . Rico em protocolos (HTTP, JDBC, JMS, gRPC) e plugins. Carga não roda em produção. Teste de carga contra prod pode derrubar o serviço real. Rode em ambiente isolado equivalente, ou com muito cuidado e feature flags. E sempre num ponto do dia de baixo tráfego.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#vitest-na-pratica",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Vitest na Prática",
+    "anchor": "vitest-na-pratica",
+    "text": "Vitest é o runner rápido nativo do ecossistema Vite : ESM e TypeScript sem config, API compatível com Jest ( describe / it / expect ), watch mode instantâneo (HMR pros testes) e coverage integrado. Mocks com vi.fn() / vi.mock() . typescript import { describe, it, expect, vi, beforeEach } from \"vitest\"; import { NotificadorPedido } from \"./notificador\"; describe(\"NotificadorPedido\", () = { const email = { enviar: vi.fn() }; beforeEach(() = vi.clearAllMocks()); it(\"notifica o cliente ao confirmar o pedido\", () = { const notificador = new NotificadorPedido(email); notificador.confirmar({ id: \"PED 1\", cliente: \"elise@x.com\" }); expect(email.enviar).toHaveBeenCalledWith( \"elise@x.com\", expect.stringContaining(\"PED 1\"), ); }); }); Rode com vitest (watch) ou vitest run (CI, uma passada). Coverage: vitest run coverage . Este hub usa Vitest. Os testes do próprio Mendez Tech Hub (loader de conteúdo, engine de busca, componentes MDX) rodam em Vitest + Testing Library — a mesma stack descrita aqui, comprovada no npm run build que gera o site.",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "testes#boas-praticas",
+    "slug": "testes",
+    "title": "Testes",
+    "category": "backend",
+    "section": "Boas Práticas",
+    "anchor": "boas-praticas",
+    "text": "Base larga de unitários, camada média de integração, topo enxuto de E2E. Suíte rápida = suíte que roda a cada commit. implementação\" Teste o que a unidade faz, não como. Sobrevive a refactors. Auto wait, seletores data cy , dados isolados por teste, zero sleep fixo. 100% de cobertura com asserts fracos não vale nada. Cubra os caminhos de risco. Ordem não importa, sem estado compartilhado, sem dependência de rede não controlada. Testes verdes bloqueiam o merge. Carga e E2E em pipelines dedicados (mais lentos).",
+    "tags": [
+      "Vitest",
+      "Playwright",
+      "Testcontainers",
+      "k6",
+      "E2E"
+    ]
+  },
+  {
+    "id": "observabilidade#_",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "Observabilidade",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#o-que-e-observabilidade",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "O que é Observabilidade",
+    "anchor": "o-que-e-observabilidade",
+    "text": "Observabilidade é a capacidade de entender o estado interno de um sistema pelos seus outputs externos — sem precisar fazer deploy de código novo pra investigar. Um sistema é observável quando você consegue responder perguntas que não previu quando o construiu. Monitoring ≠ Observability. Monitoring responde perguntas conhecidas (\"a CPU passou de 80%?\") com dashboards e alertas pré definidos. Observability te dá dados ricos o bastante pra investigar o desconhecido (\"por que ESTE cliente, nesta região, teve 3s de latência às 2h da manhã?\"). Monitoring é um subconjunto — você monitora o que já sabe que importa; observa pra descobrir o que não sabia.",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#os-3-pilares",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "Os 3 Pilares",
+    "anchor": "os-3-pilares",
+    "text": "Logs, métricas e traces — juntos dão a visão completa. Cada um responde uma pergunta diferente: Logs \", \"Eventos discretos com timestamp\", \"O que exatamente aconteceu aqui?\", \"Alto (volume)\"], [\" Métricas \", \"Números agregados no tempo\", \"Quantos? Quão rápido? Está piorando?\", \"Baixo (barato)\"], [\" Traces \", \"Jornada de 1 request entre serviços\", \"Onde o tempo foi gasto? Quem chamou quem?\", \"Médio (sampling)\"], ]} / Logs Registros discretos e imutáveis de eventos, com timestamp. Ricos em contexto, mas caros em volume. A prática moderna é structured logging — JSON em vez de texto solto — pra poder filtrar, agregar e correlacionar por um trace id : json { \"timestamp\": \"2026 07 22T14:03:11Z\", \"level\": \"ERROR\", \"service\": \"pedidos api\", \"trace id\": \"4bf92f3577b34da6a3ce929d0e0e4736\", \"message\": \"falha ao debitar estoque\", \"order id\": \"PED 1234\", \"err\": \"timeout no servico de estoque\" } Ferramentas: ELK (Elasticsearch + Logstash + Kibana), Grafana Loki , Fluentd/Fluent Bit , Splunk . Métricas Valores numéricos agregados ao longo do tempo (séries temporais). Baratas de armazenar e ideais para dashboards e alertas. Os tipos fundamentais: Só sobe (ou zera no restart). Ex.: total de requisições, erros. Sobe e desce. Ex.: uso de memória, conexões ativas, fila. Distribuição em buckets. Ex.: latência p50/p95/p99. text HELP http requests total Total de requisicoes HTTP TYPE http requests total counter http requests total{method=\"GET\",route=\"/pedidos\",status=\"200\"} 14827 PromQL: taxa de erro 5xx nos ultimos 5 minutos rate(http requests total{status=~\"5..\"}[5m]) Ferramentas: Prometheus (coleta pull + PromQL), Grafana (dashboards), StatsD , VictoriaMetrics . Traces Seguem uma única requisição atravessando vários serviços. Cada etapa é um span (com duração), ligados em árvore por parent/child sob um mesmo trace id . Revelam latência distribuída e o gargalo exato: Ferramentas: Jaeger , Grafana Tempo , Zipkin .",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#opentelemetry",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "OpenTelemetry",
+    "anchor": "opentelemetry",
+    "text": "OpenTelemetry (OTel) é o padrão aberto e vendor neutral para instrumentar os três pilares. Uma única instrumentação no código (SDK) exporta via protocolo OTLP para qualquer backend — troque o Jaeger pelo Datadog sem mexer no código. Virou o padrão de fato e elimina o vendor lock in . Componentes: SDK/API (instrumenta a app), Collector (recebe, processa, roteia telemetria) e exporters (mandam pro backend). csharp // instrumenta traces + metricas e exporta via OTLP pro Collector builder.Services.AddOpenTelemetry() .ConfigureResource(r = r.AddService(\"pedidos api\")) .WithTracing(t = t .AddAspNetCoreInstrumentation() .AddHttpClientInstrumentation() .AddOtlpExporter()) // Collector Jaeger / Tempo / Datadog .WithMetrics(m = m .AddAspNetCoreInstrumentation() .AddRuntimeInstrumentation() .AddOtlpExporter()); Auto + manual. A instrumentação automática (ASP.NET Core, HttpClient, EF Core) cobre o grosso sem esforço. Adicione spans manuais só nos pontos de negócio que importam (\"cobrança do cartão\", \"cálculo de frete\") pra enriquecer o trace.",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#ferramentas-mais-usadas",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "Ferramentas Mais Usadas",
+    "anchor": "ferramentas-mais-usadas",
+    "text": "O par padrão de mercado. Prometheus coleta e guarda séries temporais (pull + PromQL); Grafana visualiza (dashboards multi source). Alertas via Alertmanager. ELK (Elasticsearch/Logstash/Kibana) é o clássico de busca em logs. Loki é o \"Prometheus dos logs\" — mais leve, indexa por labels, casa com Grafana. Backends de tracing distribuído. Jaeger (CNCF) e Tempo (Grafana) recebem OTLP e mostram a árvore de spans. A camada de instrumentação vendor neutral que alimenta todos os outros. Não é backend — é o \"cano\" padronizado. Plataformas all in one (métricas + logs + traces + APM + alertas) gerenciadas. Menos operação, mais custo por volume. Foco em error tracking e performance de aplicação — captura exceções com stack, contexto e release, direto do código.",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#conceitos-chave",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "Conceitos-Chave",
+    "anchor": "conceitos-chave",
+    "text": "Os 4 sinais do Google SRE: Latência , Tráfego , Erros , Saturação . Se só puder medir 4 coisas, meça essas. RED (Rate, Errors, Duration) pra serviços. USE (Utilization, Saturation, Errors) pra recursos (CPU, disco, fila). SLI = a métrica (ex.: % de req &lt; 300ms). SLO = a meta interna (99,9%). SLA = o contrato com o cliente (com multa). Nessa ordem de rigor. O oposto do SLO: 99,9% de meta = 0,1% de \"orçamento de falha\". Gastou o budget? Congela features, foca em confiabilidade. Guardar 100% dos traces é caro. Amostragem (head/tail) mantém o custo sob controle sem perder os traces que importam (erros, lentos). Cada combinação de labels vira uma série. Label de alta cardinalidade (ex.: user id ) explode o custo/memória das métricas. Evite.",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
+  },
+  {
+    "id": "observabilidade#boas-praticas",
+    "slug": "observabilidade",
+    "title": "Observabilidade",
+    "category": "infra",
+    "section": "Boas Práticas",
+    "anchor": "boas-praticas",
+    "text": "Nunca logue dados sensíveis. Senha, token, cartão, CPF, PII — logs são replicados, indexados e retidos por muito tempo. Mascare ou nunca capture. Um trace id correlaciona sem expor o dado do cliente. Logs em JSON com trace id propagado entre serviços. Pular do log ao trace ao métrica com um clique. Observabilidade retrofit é dor. OTel automático custa pouco e paga na primeira madrugada de incidente. Alerte no que o usuário sente (latência, erro), não em cada métrica interna. Alerta demais = alert fatigue = ninguém olha. Deixe os SLOs guiarem alertas e prioridade. Alerte quando o error budget está queimando rápido, não a cada blip.",
+    "tags": [
+      "Logs",
+      "Métricas",
+      "Tracing",
+      "OpenTelemetry",
+      "SLO"
+    ]
   }
 ]
