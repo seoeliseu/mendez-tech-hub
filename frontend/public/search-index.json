@@ -1,1 +1,146 @@
-[]
+[
+  {
+    "id": "csharp-concepts#_",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "C# Avançado",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#middleware",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Middleware",
+    "anchor": "middleware",
+    "text": "Middleware é uma cadeia de componentes que processa request → response . Cada peça pode executar código antes e depois do próximo componente. A ordem de registro importa . Program.cs — registrar middleware csharp var builder = WebApplication.CreateBuilder(args); var app = builder.Build(); // Ordem importa! Cada Use() adiciona um elo na cadeia app.UseHttpsRedirection(); // 1º — força HTTPS app.UseAuthentication(); // 2º — valida quem é app.UseAuthorization(); // 3º — valida o que pode app.UseMiddleware (); // customizado app.MapControllers(); LoggingMiddleware.cs — criar middleware customizado csharp public class LoggingMiddleware { private readonly RequestDelegate next; // próximo na cadeia private readonly ILogger logger; public LoggingMiddleware(RequestDelegate next, ILogger logger) { next = next; logger = logger; } // Invocado para cada requisição public async Task InvokeAsync(HttpContext context) { // ▼ ANTES do próximo middleware logger.LogInformation($\"➡ {context.Request.Method} {context.Request.Path}\"); var sw = Stopwatch.StartNew(); await next(context); // ← chama o próximo elo // ▲ DEPOIS que o próximo terminou (response voltando) sw.Stop(); logger.LogInformation($\"⬅ {context.Response.StatusCode} em {sw.ElapsedMilliseconds}ms\"); } } Use vs Run vs Map Use — passa para o próximo Run — terminal (não passa adiante) Map — bifurca baseado no path Chama next() para continuar. Pode executar código antes e depois. Não chama next() . Encerra a cadeia aqui. Responde direto. Cria sub pipeline para um caminho específico. Ex: /api/",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#inversao-de-dependencia",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Inversão de Dependência",
+    "anchor": "inversao-de-dependencia",
+    "text": "Em vez de criar dependências dentro da classe ( alto acoplamento ), você recebe via construtor. O container do .NET cuida de criar e injetar tudo automaticamente. csharp public class PedidoService { private EmailSender email; public PedidoService() { // Cria dependência direto! // Impossível testar / trocar email = new EmailSender(); } } csharp public class PedidoService { private readonly IEmailSender email; // Container injeta automaticamente public PedidoService(IEmailSender email) { email = email; } } Passo a passo completo csharp // 1. Defina a INTERFACE (contrato) public interface IEmailSender { Task SendAsync(string to, string subject, string body); } // 2. Implemente a interface (implementação concreta) public class SmtpEmailSender : IEmailSender { public async Task SendAsync(string to, string subject, string body) { // lógica de envio SMTP... } } // 3. USE a interface no serviço (nunca o tipo concreto) public class PedidoService { private readonly IEmailSender email; public PedidoService(IEmailSender email) = email = email; public async Task ConfirmarAsync(Pedido pedido) { await email.SendAsync(pedido.ClienteEmail, \"Confirmado!\", \"...\"); } } // 4. REGISTRE no container (Program.cs) builder.Services.AddScoped (); builder.Services.AddScoped (); Lifetimes (Ciclo de Vida) Criada uma vez, vive enquanto o app rodar. Use para services sem estado ou caches. csharp services.AddSingleton (); Nova instância por requisição HTTP. Ideal para DbContext, services com estado. csharp services.AddScoped (); Nova instância toda vez que for pedida. Para operações leves e sem estado. csharp services.AddTransient (); Captive Dependency — armadilha clássica Nunca injete Scoped/Transient em Singleton. O Singleton vive para sempre — ele vai \"prender\" e reutilizar a instância que deveria morrer. Use IServiceScopeFactory se precisar. Qual Ciclo de Vida para Cada Camada? Regra única: case o lifetime com a dependência mais curta . A camada de Application/Service vive dentro da request e coordena recursos Scoped (DbContext, repositórios, UnitOfWork) → por isso ela também é Scoped . OrdersController \", \" Transient \", \"Framework gerencia por request\"], [\" Application / Use Case \", \" PlaceOrderService \", \" Scoped \", \"Orquestra repo + UoW na mesma transação\"], [\"Repository\", \" IOrderRepository \", \" Scoped \", \"Embrulha o DbContext \"], [\"UnitOfWork / DbContext\", \" AppDbContext \", \" Scoped \", \"1 transação por request\"], [\"Domain Service puro \", \" ITaxCalculator \", \" Singleton \", \"Stateless, determinístico, sem I/O\"], [\"Contexto de request\", \" ICurrentUser \", \" Scoped \", \"Usuário muda a cada request\"], [\"Entity / Aggregate / VO\", \" Order , Money \", \" fora do DI \", \"Criado via factory de domínio ( new )\"], ]} / Longevidade do consumidor ≤ longevidade da dependência. Nunca o contrário. Application Layer — domínio Pedidos → SCOPED csharp // Orquestra o caso de uso. Repo + UoW compartilham o MESMO DbContext // → commit atômico da request inteira. public class PlaceOrderService : IPlaceOrderService { private readonly IOrderRepository orders; // scoped private readonly IUnitOfWork uow; // scoped (DbContext) private readonly ITaxCalculator tax; // singleton (puro) private readonly ICurrentUser user; // scoped (request) public PlaceOrderService(IOrderRepository orders, IUnitOfWork uow, ITaxCalculator tax, ICurrentUser user) = ( orders, uow, tax, user) = (orders, uow, tax, user); public async Task HandleAsync(PlaceOrderCommand cmd) { // Entidade nasce da factory do domínio — NÃO vem do container var order = Order.Create( user.Id, cmd.Items); order.ApplyTax( tax); await orders.AddAsync(order); await uow.SaveChangesAsync(); // 1 transação da request return order.Id; } } // Registro builder.Services.AddScoped (); builder.Services.AddScoped (); builder.Services.AddScoped (); Por que Scoped e não Transient? Se o service, o repositório e outro service da mesma request precisam da mesma transação e do mesmo rastreamento do EF, o Scoped garante uma única instância por request . Transient poderia duplicar estado e quebrar o Unit of Work. Sem estado, sem I/O, sem DbContext. Reusa 1 instância no app inteiro. csharp // Regra de negócio pura public class TaxCalculator : ITaxCalculator { public Money Calc(Money net, Country c) = net c.VatRate; } services.AddSingleton (); ⚠️ Se um dia tocar repo/DbContext, vira Scoped . Muda a cada requisição HTTP. Nunca pode ser Singleton. csharp public class CurrentUser : ICurrentUser { public CurrentUser(IHttpContextAccessor http) = Id = Guid.Parse(http.HttpContext! .User.FindFirst(\"sub\")!.Value); public Guid Id { get; } } services.AddScoped (); Regra de ouro por camada Application/Service = Scoped · Domain Service puro = Singleton · Entity/VO/Aggregate = fora do DI . Exceção: service 100% stateless, sem repo/DbContext (ex: IPasswordHasher ) pode ser Singleton — mas a convenção é manter a camada Scoped por consistência.",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#threads",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Threads",
+    "anchor": "threads",
+    "text": "Thread é uma unidade de execução do SO. O .NET gerencia um pool de threads ( ThreadPool ) para não criar/destruir threads a cada operação — isso é caro. Linha do tempo — 3 threads paralelas Legenda: barra roxa = CPU ativo · barra amarela = Esperando I/O (thread bloqueada) Thread — uso direto (raro em apps modernos) csharp // Thread manual — geralmente NÃO faça isso em ASP.NET var thread = new Thread(() = { Console.WriteLine($\"Rodando na thread {Thread.CurrentThread.ManagedThreadId}\"); Thread.Sleep(1000); // BLOQUEIA a thread inteira! }); thread.Start(); thread.Join(); // aguarda terminar // ThreadPool — melhor, reutiliza threads existentes ThreadPool.QueueUserWorkItem( = { Console.WriteLine(\"Executando no pool\"); }); Nunca use Thread.Sleep() ou Thread diretamente em ASP.NET Core Bloqueia threads do pool, starva o servidor. Use await Task.Delay() em vez de Thread.Sleep() .",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#tasks",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Tasks",
+    "anchor": "tasks",
+    "text": "Task representa uma operação assíncrona . É a abstração que o .NET usa sobre threads — você trabalha com o resultado, não com a thread em si. Representa operação que não retorna valor. Equivale ao void async. csharp Task tarefa = ProcessarAsync(); await tarefa; \" title=\"Com retorno\" Retorna um valor do tipo T quando completa. csharp Task soma = SomarAsync(1, 2); int resultado = await soma; // = 3 Padrões comuns com Task csharp // Rodar múltiplos em PARALELO e aguardar todos var t1 = BuscarProdutosAsync(); var t2 = BuscarEstoqueAsync(); var t3 = BuscarPrecoAsync(); await Task.WhenAll(t1, t2, t3); // todas em paralelo! // Se qualquer uma falhar, WhenAll propaga a exceção // Aguardar o PRIMEIRO que terminar var resultado = await Task.WhenAny(t1, t2, t3); // Task já completa — evita alocar nova Task return Task.FromResult(42); return Task.CompletedTask; // Cancelamento com CancellationToken public async Task BuscarAsync(int id, CancellationToken ct) { await Task.Delay(1000, ct); // cancela se ct disparar return await db.Produtos.FindAsync(new object[] { id }, ct); } // Task.Run — força execução em thread do pool (CPU bound) var resultado = await Task.Run(() = CalculoIntensivo(dados)); Task.Run só para CPU bound Para I/O (banco, rede, arquivo), nunca use Task.Run . Use os métodos async nativos das bibliotecas. Task.Run existe para liberar a thread de UI ou de request enquanto processa algo pesado em CPU.",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#async-await",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Async / Await",
+    "anchor": "async-await",
+    "text": "async/await é açúcar sintático — o compilador transforma seu código em uma máquina de estados. A thread não fica bloqueada esperando I/O; ela volta para o pool e é reaproveitada. ... I/O completa no hardware ... Async/Await na prática csharp // ✅ CORRETO — async do início ao fim (async all the way down) public async Task GetProduto(int id) { var produto = await db.Produtos .Where(p = p.Id == id) .FirstOrDefaultAsync(); // não bloqueia if (produto is null) return NotFound(); return Ok(produto); } // ❌ ERRADO — .Result bloqueia a thread! (deadlock potencial) var produto = db.Produtos.FirstOrDefaultAsync(p = p.Id == id).Result; // ❌ ERRADO — async void não é await able, exceções somem public async void Processar() { } // só ok em event handlers // ConfigureAwait(false) — em bibliotecas, evita capturar contexto var dados = await http.GetStringAsync(url).ConfigureAwait(false); // Em ASP.NET Core apps, não precisa — não há SynchronizationContext Armadilhas comuns Bloqueia a thread que está esperando o resultado de uma Task que precisa dessa mesma thread para continuar. App trava. csharp // NUNCA faça isso: var r = GetDataAsync().Result; Exceções são silenciadas. A task morre quando o request termina em ASP.NET. csharp // Exceção some no ar: = ProcessarAsync(); // Use IHostedService para background Cada await espera o anterior. Simples e seguro quando a ordem importa. csharp var a = await PrimeiroPasso(); var b = await SegundoPasso(a); Inicia tudo junto, aguarda todos. Muito mais rápido quando independentes. csharp await Task.WhenAll( PrimeiroPasso(), SegundoPasso() );",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#design-patterns",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Design Patterns",
+    "anchor": "design-patterns",
+    "text": "Soluções reutilizáveis para problemas recorrentes de design. Não é código pra copiar — é vocabulário + estrutura . O grupo GoF (Gang of Four) divide em 3 famílias. Abstraem a criação de instâncias. Factory Method · Abstract Factory · Builder · Singleton · Prototype Montam objetos maiores a partir de menores. Adapter · Decorator · Facade · Proxy · Composite · Bridge · Flyweight Definem comunicação e responsabilidade. Strategy · Observer · Command · Mediator · State · Chain of Responsibility Os mais usados no dia a dia Strategy \", \"Comportamental\", \"Trocar algoritmo em runtime\", \"Políticas de preço/frete, IComparer \"], [\" Factory Method \", \"Criacional\", \"Criar sem acoplar ao concreto\", \" ILoggerFactory , DbProviderFactory \"], [\" Builder \", \"Criacional\", \"Construção passo a passo\", \" StringBuilder , WebApplicationBuilder \"], [\" Singleton \", \"Criacional\", \"Uma instância global\", \" AddSingleton (não o static clássico!)\"], [\" Adapter \", \"Estrutural\", \"Traduzir interface incompatível\", \"Wrapper de SDK/lib legada\"], [\" Decorator \", \"Estrutural\", \"Somar comportamento sem herança\", \"Cache/Logging, Stream \"], [\" Proxy \", \"Estrutural\", \"Controlar acesso ao objeto\", \"EF lazy loading, DispatchProxy \"], [\" Observer \", \"Comportamental\", \"Notificar múltiplos ao mudar\", \" event , IObservable , MediatR notifications\"], [\" Mediator \", \"Comportamental\", \"Desacoplar quem chama de quem faz\", \"MediatR (base de CQRS)\"], [\" Repository + UoW \", \"— (não GoF)\", \"Abstrair persistência\", \"EF Core DbContext / DbSet \"], ]} / Strategy — trocar algoritmo em runtime csharp // Contrato: família de algoritmos intercambiáveis public interface IShippingStrategy { decimal Calculate(Order order); } public class ExpressShipping : IShippingStrategy { public decimal Calculate(Order order) = order.Weight 2.5m + 20m; } public class StandardShipping : IShippingStrategy { public decimal Calculate(Order order) = order.Weight 1.0m; } // Contexto usa a estratégia sem saber qual é (injetada via DI) public class ShippingCalculator { private readonly IShippingStrategy strategy; public ShippingCalculator(IShippingStrategy strategy) = strategy = strategy; public decimal Total(Order o) = strategy.Calculate(o); } Factory Method — criar sem expor a classe concreta csharp public class PaymentFactory { public IPaymentProcessor Create(PaymentMethod method) = method switch { PaymentMethod.Pix = new PixProcessor(), PaymentMethod.CreditCard = new CreditCardProcessor(), PaymentMethod.Boleto = new BoletoProcessor(), = throw new NotSupportedException($\"{method} não suportado\") }; } Decorator — somar cache sem tocar no repositório original csharp // Componente base public interface IProductRepository { Task GetAsync(int id); } // Decorator embrulha o repo e adiciona cache public class CachedProductRepository : IProductRepository { private readonly IProductRepository inner; private readonly IMemoryCache cache; public CachedProductRepository(IProductRepository inner, IMemoryCache cache) = ( inner, cache) = (inner, cache); public Task GetAsync(int id) = cache.GetOrCreateAsync($\"product:{id}\", = inner.GetAsync(id))!; } // Registro: o Cached envolve a implementação real services.AddScoped (); services.AddScoped (sp = new CachedProductRepository( sp.GetRequiredService (), sp.GetRequiredService ())); Pattern não é bala de prata Use quando o problema aparece , não antes. Aplicar pattern sem necessidade = over engineering: camadas de abstração inúteis que só dificultam a leitura.",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#resiliencia",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Resiliência",
+    "anchor": "resiliencia",
+    "text": "Em sistemas distribuídos, falha não é exceção — é regra . Rede cai, dependência fica lenta, serviço sai do ar. Resiliência = o app continua de pé (ou degrada com graça ) apesar das falhas. Lib padrão .NET: Polly v8 + Microsoft.Extensions.Http.Resilience . Falha transitória (blip de rede) → repete com backoff exponencial + jitter. Só idempotente. Dependência morta → \"abre o circuito\", para de chamar. Evita cascata e dá tempo de recuperar. Corta request pendurado após X. Libera thread e connection do pool. Tudo falhou → resposta alternativa: cache velho, valor padrão, resposta degradada. Limita concorrência por dependência. Uma lenta não afoga o pool inteiro (isola como compartimentos de navio). Se o 1º demora, dispara request paralelo. Corta a cauda de latência (p99). limite → falha na hora (BrokenCircuitException), nem chama a dependência\" }, { box: \"🟡 Half Open\", color: \" fbbf24\", indent: 2, note: \"após BreakDuration, deixa 1 request de teste passar\" }, ]} / Teste com sucesso → volta a Closed · nova falha → volta a Open. Polly v8 — ResiliencePipeline montado à mão csharp using Polly; // Retry (externo) envolve circuit breaker e timeout (internos) ResiliencePipeline pipeline = new ResiliencePipelineBuilder () .AddRetry(new() { MaxRetryAttempts = 3, Delay = TimeSpan.FromSeconds(1), BackoffType = DelayBackoffType.Exponential, UseJitter = true, // evita \"thundering herd\" ShouldHandle = new PredicateBuilder () .Handle () .HandleResult(r = r.StatusCode == HttpStatusCode.ServiceUnavailable) }) .AddCircuitBreaker(new() { FailureRatio = 0.5, // abre se 50% falharem... SamplingDuration = TimeSpan.FromSeconds(10), // ...na janela de 10s MinimumThroughput = 8, // com no mínimo 8 chamadas BreakDuration = TimeSpan.FromSeconds(30) }) .AddTimeout(TimeSpan.FromSeconds(5)) // por tentativa .Build(); // Executa a operação dentro do pipeline var response = await pipeline.ExecuteAsync( async token = await httpClient.GetAsync(\"/api/estoque\", token), cancellationToken); Program.cs — Standard Resilience Handler (.NET 8, recomendado) csharp // Pacote: Microsoft.Extensions.Http.Resilience // Um método = retry + circuit breaker + timeout + rate limiter prontos builder.Services.AddHttpClient () .AddStandardResilienceHandler(); // Ajuste fino quando precisar builder.Services.AddHttpClient () .AddStandardResilienceHandler().Configure(o = { o.Retry.MaxRetryAttempts = 5; o.CircuitBreaker.MinimumThroughput = 10; o.AttemptTimeout.Timeout = TimeSpan.FromSeconds(3); }); Pipeline customizado — com Fallback e Bulkhead csharp builder.Services.AddHttpClient () .AddResilienceHandler(\"catalogo\", b = { b.AddFallback(new FallbackStrategyOptions { FallbackAction = = Outcome.FromResultAsValueTask( new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)) }) .AddConcurrencyLimiter(100) // bulkhead .AddRetry(new HttpRetryStrategyOptions()) .AddCircuitBreaker(new HttpCircuitBreakerStrategyOptions()) .AddTimeout(new HttpTimeoutStrategyOptions()); }); Retry só em operação IDEMPOTENTE Repetir um POST /pagamentos não idempotente = cobrança dupla. Antes de habilitar retry em escrita, garanta chave de idempotência (o servidor detecta e ignora a repetição). Backoff exponencial + Jitter Sem jitter, todos os clientes re tentam no mesmo instante → nova onda derruba o serviço que ia se recuperar ( thundering herd ). O jitter espalha as tentativas no tempo. Além do Polly — resiliência de arquitetura AddHealthChecks() expõe /health . Orquestrador (K8s) usa para readiness/liveness — tira do balanceador o pod doente. Cliente manda Idempotency Key . Servidor guarda o resultado e devolve o mesmo em reenvios — base segura pra retry. Recomendações fora do ar? Mostra a página do produto sem elas, em vez de erro 500. Feature secundária falha isolada. Outbox : grava evento na mesma transação do banco → publica depois (não perde mensagem). Saga : coordena transações longas com compensação. Resiliência sem observabilidade é cega Sempre logue/meça quando retry disparou, circuit abriu, fallback ativou. Sem métricas você não sabe que a dependência está degradada — só vê o sintoma tarde demais. Polly emite telemetria via Microsoft.Extensions.Resilience .",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  },
+  {
+    "id": "csharp-concepts#comparativo-geral",
+    "slug": "csharp-concepts",
+    "title": "C# Avançado",
+    "category": "backend",
+    "section": "Comparativo Geral",
+    "anchor": "comparativo-geral",
+    "text": "Thread \", \"Unidade de execução do SO\", \"CPU bound puro, legacy code\", \"I/O, ASP.NET modern apps\"], [\" Task \", \"Abstração de operação assíncrona\", \"Todo código async moderno\", \"Nunca use .Result/.Wait()\"], [\" async/await \", \"Sintaxe para consumir Tasks\", \"Sempre que chamar método async\", \"Dentro de construtores\"], [\" Middleware \", \"Pipeline de request/response\", \"Cross cutting concerns (auth, log, CORS)\", \"Lógica de negócio\"], [\" DI — Singleton \", \"Uma instância por app\", \"Cache, configs, serviços stateless\", \"DbContext, estado por usuário\"], [\" DI — Scoped \", \"Uma instância por request\", \"DbContext, Unit of Work\", \"Injetar em Singleton\"], [\" DI — Transient \", \"Nova instância sempre\", \"Validators, helpers leves\", \"Serviços com recursos caros\"], ]} / Regra de ouro para async Se um método faz I/O → deve ser async Task . Propague o async para cima até o controller. Nunca misture sync/async no caminho crítico. Regra de ouro para DI Sempre dependa de interfaces, nunca de implementações concretas. O container resolve. Testes passam um mock. Produção passa a impl real.",
+    "tags": [
+      "Middleware",
+      "DI",
+      "Async",
+      "Design Patterns",
+      "Resiliência"
+    ]
+  }
+]
