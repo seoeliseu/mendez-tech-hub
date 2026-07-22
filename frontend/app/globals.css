@@ -9,6 +9,11 @@
   --color-muted: #5f6882;
   --color-dim: #3a4060;
 
+  /* accent gradient stops (hero title, index.html `.grad`) */
+  --color-accent-1: #818cf8;
+  --color-accent-2: #38bdf8;
+  --color-accent-3: #4ade80;
+
   --font-sans: var(--font-space-grotesk), system-ui, sans-serif;
   --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 }
@@ -23,6 +28,22 @@ body::before {
   background-image: radial-gradient(circle, #1f2540 1px, transparent 1px);
   background-size: 28px 28px; opacity: 0.45;
 }
+
+/* hero title gradient text, ported from index.html `.grad` */
+.text-gradient-accent {
+  background: linear-gradient(120deg, var(--color-accent-1) 0%, var(--color-accent-2) 50%, var(--color-accent-3) 100%);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* hero eyebrow blinking dot, ported from index.html `.eyebrow-dot` */
+@keyframes blink {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px #4ade80; }
+  50% { opacity: 0.4; box-shadow: none; }
+}
+.eyebrow-dot { animation: blink 2.4s ease-in-out infinite; }
 
 pre { overflow-x: auto; border-radius: 12px; border: 1px solid var(--color-border); background: #131722 !important; padding: 20px 22px; margin: 20px 0; font-family: var(--font-mono); font-size: 13px; line-height: 1.7; }
 pre code { display: grid; background: transparent !important; }
