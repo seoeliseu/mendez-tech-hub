@@ -2,6 +2,9 @@ import type { MDXComponents } from "mdx/types";
 import { Callout } from "./Callout";
 import { Pill } from "./Pill";
 import { CardGrid, Card, Badge } from "./CardGrid";
+import { Pipeline } from "./Pipeline";
+import { FlowDiagram } from "./FlowDiagram";
+import { ThreadTimeline } from "./ThreadTimeline";
 
 // Real components added in Tasks 4-7. Start with element styling.
 export const mdxComponents: MDXComponents = {
@@ -18,4 +21,7 @@ export const mdxComponents: MDXComponents = {
   CardGrid,
   Card,
   Badge,
+  Pipeline,
+  FlowDiagram,
+  ThreadTimeline,
 };
