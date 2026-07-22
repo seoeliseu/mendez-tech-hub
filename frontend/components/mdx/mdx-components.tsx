@@ -1,6 +1,7 @@
 import type { MDXComponents } from "mdx/types";
 import { Callout } from "./Callout";
 import { Pill } from "./Pill";
+import { CardGrid, Card, Badge } from "./CardGrid";
 
 // Real components added in Tasks 4-7. Start with element styling.
 export const mdxComponents: MDXComponents = {
@@ -14,4 +15,7 @@ export const mdxComponents: MDXComponents = {
   td: (p) => <td className="border-b border-border px-4 py-3" {...p} />,
   Callout,
   Pill,
+  CardGrid,
+  Card,
+  Badge,
 };
