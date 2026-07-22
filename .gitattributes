@@ -1,0 +1,8 @@
+# Shell scripts must stay LF — CRLF breaks the shebang in bash/WSL/git-bash
+# (`/usr/bin/env bash^M: bad interpreter`) after a checkout on Windows.
+*.sh  text eol=lf
+
+# Windows scripts stay CRLF.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
