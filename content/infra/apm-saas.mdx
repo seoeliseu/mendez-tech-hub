@@ -1,0 +1,189 @@
+---
+title: "APM SaaS — Datadog, New Relic, Dynatrace"
+slug: apm-saas
+category: infra
+icon: "📈"
+accent: "#ec4899"
+description: "Plataformas de observabilidade all-in-one gerenciadas (APM + logs + métricas + traces + RUM): Datadog, New Relic e Dynatrace."
+tags: [Datadog, New Relic, Dynatrace, APM]
+order: 14
+updated: 2026-07-22
+---
+
+## O que é APM SaaS
+
+"APM" nasceu como sigla de **Application Performance Monitoring** — instrumentar uma aplicação pra medir transações, tempo de resposta e erros. Mas **"APM SaaS"** hoje descreve algo bem maior: uma **plataforma única, gerenciada pelo vendor**, que empacota os 3 pilares da observabilidade (logs, métricas, traces) e ainda soma **RUM** (Real User Monitoring), **synthetics** (robôs simulando usuários), alertas e dashboards — tudo entregue por um **agente que se auto-instrumenta**, sem você operar storage, retenção ou pipeline de ingestão.
+
+<CardGrid cols={3}>
+  <Card accent="#ec4899" title="APM">
+    Traces de aplicação: transações, latência por endpoint, erros e dependências entre serviços.
+  </Card>
+  <Card accent="#38bdf8" title="Infra Metrics">
+    CPU, memória, disco, rede — do host físico ao container — coletados pelo mesmo agente.
+  </Card>
+  <Card accent="#fbbf24" title="Logs">
+    Ingestão, indexação e busca full-text, já correlacionada ao trace e ao host de origem.
+  </Card>
+  <Card accent="#a78bfa" title="RUM">
+    Telemetria do navegador/app mobile do usuário real: page load, Core Web Vitals, crashes.
+  </Card>
+  <Card accent="#34d399" title="Synthetics">
+    Testes automáticos 24/7 de fora pra dentro, detectando queda antes do cliente reclamar.
+  </Card>
+  <Card accent="#f87171" title="Alertas & Dashboards">
+    Regras, IA de anomalia e painéis prontos — o produto final que o time de plantão realmente olha.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Diferença pra pilha OSS.** Na pilha open-source (Prometheus + Loki + Tempo/Jaeger, coladas por OpenTelemetry) você monta e opera cada peça. No APM SaaS, um único agente (Datadog Agent, New Relic Agent, `OneAgent`) já nasce falando com o backend do próprio vendor — você troca **operação** por **fatura mensal**.
+</Callout>
+
+## Como Funciona
+
+<FlowDiagram
+  title="APM SAAS — FLUXO DE PONTA A PONTA"
+  rows={[
+    { box: "App + Agente (auto-instrumentação)", color: "#ec4899", note: "roda no host/pod", tip: "O agente injeta instrumentação (bytecode, eBPF ou ptrace) sem exigir mudança no código-fonte; já captura traces, métricas de runtime e telemetria de RUM." },
+    { box: "Ingest do SaaS", color: "#38bdf8", indent: 1, note: "HTTPS + API key", tip: "Os dados saem da sua rede e chegam ao backend proprietário do vendor (Datadog Intake, NRDB, Grail) — e ficam armazenados lá." },
+    { box: "Correlação automática (APM + logs + infra + RUM)", color: "#a78bfa", indent: 1, note: "via tags e trace_id", tip: "O vendor já liga trace, log, host e sessão de usuário pelo mesmo identificador — o principal valor de pagar por um SaaS." },
+    { box: "Dashboards, alertas e IA (Watchdog / Davis / Applied Intelligence)", color: "#34d399", indent: 1, note: "root cause automático em parte dos casos", tip: "Motores de IA cruzam anomalias com a topologia de dependências pra sugerir — ou já apontar — a causa raiz e reduzir o ruído de alerta." },
+  ]}
+  caption="O mesmo desenho nos 3 vendors — muda o nome do agente e do motor de IA."
+/>
+
+Na pilha OSS você mesmo cola Prometheus + Loki + Tempo com um Collector do OpenTelemetry. No APM SaaS o "cano" já vem soldado: o agente do vendor fala nativamente com o backend dele. Dá pra trocar o agente proprietário por instrumentação `OpenTelemetry` pura exportando via `OTLP` direto pro ingest do SaaS — os três vendors aceitam OTLP — mas dashboards, alertas e a linguagem de consulta (NRQL, DQL, ou a sintaxe própria do Datadog) continuam presos ao vendor.
+
+## Datadog
+
+O maior catálogo de integrações do mercado — mais de 900 no Datadog Marketplace, cobrindo desde AWS/Azure/GCP até bancos de dados, filas e frameworks. Isso faz do Datadog o produto mais forte em **correlação infra + APM**: qualquer métrica de host, container ou serviço gerenciado já chega taggeada e pronta pra cruzar com um trace.
+
+A peça central é o **Unified Service Tagging** — três tags reservadas (`env`, `service`, `version`) aplicadas a métricas, traces, logs e profiles do mesmo serviço. Definindo essas três tags (via variáveis de ambiente do agente ou atributos OpenTelemetry) todo o resto se correlaciona sozinho:
+
+```yaml
+# variaveis de ambiente no pod/container -- ativa Unified Service Tagging
+env:
+  - name: DD_ENV
+    value: "producao"
+  - name: DD_SERVICE
+    value: "pedidos-api"
+  - name: DD_VERSION
+    value: "1.4.2"
+  # alternativa via padrao OpenTelemetry (o Datadog remapeia automaticamente):
+  - name: OTEL_RESOURCE_ATTRIBUTES
+    value: "service.name=pedidos-api,deployment.environment.name=producao"
+```
+
+<Callout type="tip">
+**Watchdog** é o motor de detecção de anomalias do Datadog: aprende a baseline normal de cada métrica/serviço e alerta sozinho quando o padrão foge do histórico, sem você escrever threshold manual.
+</Callout>
+
+Preço é **à la carte por módulo**: infraestrutura por host/mês, APM por host/mês, logs por GB ingerido **e** por evento indexado (cobranças separadas — logar sem indexar é bem mais barato), RUM por sessão, Synthetics por teste. Granularidade dá controle fino, mas exige monitorar o próprio consumo pra não ser surpreendido na fatura.
+
+## New Relic
+
+Fundada em 2008, foi a empresa que **criou a categoria** "APM em SaaS" — antes disso, medir performance de aplicação exigia ferramentas on-premise. Sua marca registrada sempre foi o **tracing profundo por linha de código**: hotspot exato de tempo dentro de um método, não só "qual endpoint está lento".
+
+Tecnicamente, tudo (métricas, eventos, logs, traces) é gravado numa única base de eventos, o **NRDB**, consultável por **NRQL** (linguagem parecida com SQL). Dashboards, alertas e análises ad-hoc usam a mesma linguagem de consulta pra qualquer tipo de dado:
+
+```text
+# NRQL - estimar custo mensal de ingestao de dados no plano atual
+FROM NrMTDConsumption
+SELECT latest(GigabytesIngestedBillable) * 0.40
+```
+
+O preço soma **dois eixos independentes**:
+
+<CardGrid cols={2}>
+  <Card accent="#38bdf8" title="Dado ingerido (GB)">
+    Cobrança por GB/mês, com faixa gratuita inicial (referência pública: <strong>100 GB/mês grátis</strong>). Acima disso, o preço por GB varia pela camada — <code>Data</code> (retenção padrão, ~8 dias) ou <code>Data Plus</code> (retenção estendida, ~90 dias, mais cara por GB).
+  </Card>
+  <Card accent="#a78bfa" title="Usuário (assento)">
+    Cobrança por pessoa, em categorias de acesso — de leitura básica gratuita até acesso completo (<strong>Full Platform</strong>). Times grandes sentem esse eixo tanto quanto o volume de dado.
+  </Card>
+</CardGrid>
+
+## Dynatrace
+
+O agente é só um: o **OneAgent**. Um único binário instalado por host (VM, nó do Kubernetes via Operator/Helm, ou injetado por webhook em cada pod) que se **auto-descobre** — encontra sozinho todos os processos, serviços, containers e dependências rodando ali e monta isso em tempo real num mapa de topologia (**Smartscape**), sem editar código nem declarar manualmente cada serviço.
+
+```bash
+# instala o OneAgent num host Linux (token e URL vem do seu ambiente Dynatrace)
+wget -O Dynatrace-OneAgent.sh \
+  "https://{seu-ambiente}.live.dynatrace.com/api/v1/deployment/installer/agent/unix/default/latest?arch=x86&flavor=default"
+sudo /bin/sh Dynatrace-OneAgent.sh --set-app-log-content-access=true
+```
+
+Por trás da automação está a **Davis AI** — motor baseado em causalidade (não só estatística) que cruza continuamente eventos, métricas, logs e a topologia da Smartscape pra rodar uma análise de árvore de falhas e apontar a **causa raiz exata**, não só o sintoma. Isso vira um único "Problem" já com o blast radius mapeado, em vez de dezenas de alertas soltos pro mesmo incidente.
+
+<Callout type="info">
+**Determinístico ≠ estatístico.** Watchdog (Datadog) e Applied Intelligence (New Relic) aprendem baseline e detectam desvio estatístico. Davis AI soma a isso um modelo de causalidade sobre a topologia real de dependências — por isso o Dynatrace se vende como o mais forte em apontar causa raiz automática, não só anomalia.
+</Callout>
+
+Historicamente mais forte em **enterprise e setores regulados** (bancos, telcos, seguradoras): suporte a ambientes híbridos muito grandes e heterogêneos, e a opção **Dynatrace Managed** — a mesma plataforma rodando dentro do datacenter do cliente, pra quem tem exigência de residência de dado que um SaaS público não atende.
+
+## Comparação
+
+Os três resolvem o mesmo problema por ângulos diferentes — a escolha certa depende do que pesa mais pro seu time: amplitude, profundidade histórica ou automação.
+
+<ComparisonTable
+  head={["Critério", "Datadog", "New Relic", "Dynatrace"]}
+  rows={[
+    ["Foco principal", "<strong style='color:#a78bfa'>Amplitude</strong> — 900+ integrações, infra + APM + logs + rede + segurança num catálogo só", "<strong style='color:#38bdf8'>Tracing profundo</strong> — pioneiro em APM por linha de código, tudo numa única base (NRDB/NRQL)", "<strong style='color:#f472b6'>Automação enterprise</strong> — auto-descoberta total e causalidade, foco em ambientes híbridos grandes"],
+    ["IA / causa raiz", "<code>Watchdog</code> — detecção estatística de anomalia", "<code>Applied Intelligence</code> — correlação e ranking de alertas", "<code>Davis AI</code> — causal, aponta a causa raiz via árvore de falhas"],
+    ["Modelo de preço", "À la carte por módulo: host/mês (infra + APM) + GB de log indexado + RUM/Synthetics avulsos", "Consumo: GB ingerido/mês (com faixa gratuita) + assento de usuário por tipo de acesso", "Consumo (DDU — Davis Data Units) ou por host, conforme o contrato (Dynatrace Platform Subscription)"],
+    ["Instrumentação", "<code>Datadog Agent</code> + libs <code>dd-trace</code> por linguagem, ou OpenTelemetry via DDOT Collector", "Agente de APM por linguagem, ou exportação compatível com OpenTelemetry", "<code>OneAgent</code> único, injeção automática (bytecode/eBPF) sem tocar no código"],
+  ]}
+/>
+
+## SaaS vs OSS Self-Hosted (Prometheus/Grafana/OTel)
+
+Trocar OSS por SaaS é trocar **quem opera** — não elimina o trade-off, move ele.
+
+<CardGrid cols={2}>
+  <Card accent="#fb923c" title="Custo">
+    SaaS: opex previsível por assinatura, mas escala com volume (hosts, GB de log, spans) — pode disparar com o crescimento. OSS: infraestrutura mais barata, mas o custo vira horas de engenharia operando storage e retenção.
+  </Card>
+  <Card accent="#66bb6a" title="Operação">
+    SaaS: o vendor cuida de HA, upgrade e escala do backend — zero-ops pro seu time. OSS: você opera HA do Prometheus/Loki/Tempo, faz sharding, backup e migração de versão.
+  </Card>
+  <Card accent="#f87171" title="Lock-in">
+    SaaS: dashboards, alertas e a linguagem de consulta (NRQL, DQL, sintaxe própria) vivem no formato do vendor. OSS + OpenTelemetry: instrumentação neutra, o backend é um detalhe trocável.
+  </Card>
+  <Card accent="#818cf8" title="Time-to-value">
+    SaaS: correlação e dashboards prontos em minutos após instalar o agente. OSS: você monta os painéis, os alertas e a correlação (ex.: casar <code>trace_id</code> com log) manualmente.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Não é tudo ou nada.** Um caminho comum: instrumentar com **OpenTelemetry** desde o início e decidir o backend depois — ou até rodar os dois em paralelo (ex.: Prometheus interno pra métricas de infra baratas, SaaS só pra APM/RUM, onde a correlação automática paga o preço).
+</Callout>
+
+## Boas Práticas e Pegadinhas
+
+<Callout type="warn">
+**Custo escala com volume, não com valor.** Cada host novo num Auto Scaling Group, cada span sem sampling, cada log deixado em nível DEBUG em produção multiplica a fatura — sem necessariamente multiplicar o benefício. Configure alertas de consumo desde o primeiro mês e filtre o que é indexado antes de mandar tudo pro SaaS.
+</Callout>
+
+<Callout type="tip">
+**Instrumente com OpenTelemetry, não com o SDK proprietário.** Os três vendors aceitam OTLP nativamente. Instrumentar a aplicação com o SDK/Collector do OTel em vez do agente proprietário mantém o código portável — trocar de Datadog pra Dynatrace vira uma troca de exportador, não uma reescrita de instrumentação (dashboards e alertas ainda precisam ser refeitos, mas o ponto mais caro — o código instrumentado — fica protegido).
+</Callout>
+
+<Callout type="warn">
+**PII em log vira PII no vendor.** Em SaaS o log sai da sua infraestrutura e passa a viver na nuvem de terceiros, sujeito à retenção e à política de compliance dele. Senha, token, cartão, CPF — nunca capture. Use as ferramentas de mascaramento na entrada (Sensitive Data Scanner no Datadog, obfuscation rules no New Relic, log masking no Dynatrace) antes do dado ser indexado, não depois.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#a78bfa" title="Tagging desde o dia 1">
+    Padronize <code>env</code>/<code>service</code>/<code>version</code> (ou o equivalente OTel) antes de escalar — corrigir tag depois de tudo instrumentado é retrabalho em cada serviço.
+  </Card>
+  <Card accent="#38bdf8" title="Ambiente por tag, não por conta">
+    Separe dev/stage/prod com tags e workspaces dentro da mesma conta. Conta nova por ambiente multiplica licença e perde a correlação entre eles.
+  </Card>
+  <Card accent="#34d399" title="Automatize com IaC">
+    Instale e configure o agente via Terraform/Helm/Operator. Onboarding manual de host é o motivo nº 1 de "serviço sem monitoramento" em produção.
+  </Card>
+  <Card accent="#fbbf24" title="Monitore o próprio consumo">
+    Todo vendor grande tem um dashboard interno de uso (GB ingerido, hosts, custom metrics). Revise mensalmente — é o jeito de pegar o pico de custo antes da fatura.
+  </Card>
+</CardGrid>

@@ -695,6 +695,21 @@
     ]
   },
   {
+    "id": "system-design#cases-de-system-design",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "Cases de System Design",
+    "anchor": "cases-de-system-design",
+    "text": "Cases aplicando os conceitos em problemas reais: requisitos, arquitetura, diagramas (passe o mouse nas caixas para ver o comentário de cada ponto) e como comprovar o SLA com teste. Case 1 — Processar planilha de 1M linhas em ate 20min O problema. O usuário sobe uma planilha (CSV/XLSX) por um portal. O serviço precisa processar 1.000.000 de linhas , validar, persistir no banco e liberar a consulta das linhas cadastradas — tudo em até 20 minutos , com testes comprovando o SLA. Pontos sensíveis: como receber/gravar um arquivo grande sem derrubar o servidor, e como ler sem estourar a memória. Orçamento de tempo — por que 20min é folgado. 1.000.000 linhas em 1.200s exigem só ~833 linhas/s . Parsing em streaming faz dezenas de milhares por segundo; bulk insert faz 50k–100k/s. Um único worker resolve em ~2–5 min — os 20min são margem enorme; paralelismo vira segurança, não necessidade. Bulk insert (COPY) \", \"50k–100k linhas/s\", \"~10–20 s\"], [\"INSERT linha a linha\", \"~500 linhas/s\", \" ~33 min (estoura!) \"], ]} / Nunca passe o arquivo grande pelo app server. Gravar 100+ MB no disco/memória da API é o erro clássico — OOM, disco cheio, timeout de upload. Na AWS o arquivo vai direto pro S3 via presigned URL : o portal pede uma URL assinada à API, e o browser sobe o arquivo direto no S3. O app nunca toca o binário. Arquitetura AWS — do upload à consulta. Cada caixa tem um comentário no hover: EventBridge\", color: \" fbbf24\", indent: 3, tip: \"ObjectCreated dispara o job automaticamente, sem polling\" }, { box: \"SQS (fila de jobs)\", color: \" f472b6\", indent: 4, tip: \"Desacopla upload de processamento. Absorve picos, at least once, DLQ\" }, { box: \"Worker (ECS Fargate)\", color: \" 66bb6a\", indent: 5, tip: \"Consome a fila. Fargate roda 15min (limite do Lambda), escala por tarefa\" }, { box: \"Aurora / RDS\", color: \" f87171\", indent: 6, tip: \"Persiste as linhas via bulk COPY. Indexado para consulta paginada depois\" }, ]} / Fluxo do upload. O binário nunca cruza a API: Processamento no worker — memória constante. Lê o S3 como stream, processa em lotes e descarta cada lote: Fargate, não Lambda. O AWS Lambda tem teto de 15 min de execução — o SLA é 20 min. Rode o worker em ECS Fargate (roda o tempo que precisar). Se quiser Lambda, particione o arquivo (Step Functions Map) em pedaços que rodem em &lt; 15 min cada, em paralelo. Gravar e ler o arquivo grande — os cuidados que o problema pede: Presigned URL + multipart upload (o SDK fatia em partes, retoma parte que falhou). O app server nunca segura o binário — zero risco de OOM/disco. GetObject como Stream + StreamReader / CsvReader linha a linha. NUNCA ReadAllText / ReadAllLines — carregar 100+ MB na heap = OOM. Postgres COPY / SqlBulkCopy , lotes de 5–10k. INSERT linha a linha são 1M round trips = dezenas de minutos. SQS entrega at least once . Use jobId + upsert/dedup para reprocesso não duplicar linhas. Código — presigned URL (a API só assina): csharp // API: gera a URL assinada; o browser faz o PUT direto no S3 var req = new GetPreSignedUrlRequest { BucketName = \"uploads planilhas\", Key = $\"jobs/{jobId}/{fileName}\", Verb = HttpVerb.PUT, Expires = DateTime.UtcNow.AddMinutes(15), }; string url = s3.GetPreSignedURL(req); // devolve pro portal — o app nao ve os bytes Código — leitura em streaming + bulk insert (memória constante): csharp // Worker: le o S3 como STREAM e insere em lotes — memoria nao cresce com o arquivo using var resp = await s3.GetObjectAsync(\"uploads planilhas\", key); using var reader = new StreamReader(resp.ResponseStream); using var csv = new CsvReader(reader, CultureInfo.InvariantCulture); const int BATCH = 10 000; var buffer = new List (BATCH); await foreach (var linha in csv.GetRecordsAsync ()) { buffer.Add(Validar(linha)); if (buffer.Count = BATCH) { await BulkInsertAsync(buffer); // COPY / SqlBulkCopy await AtualizarProgresso(jobId, BATCH); buffer.Clear(); // solta o lote — nunca segura 1M na RAM } } if (buffer.Count 0) await BulkInsertAsync(buffer); Comprovando o SLA — teste de carga (k6): gera a planilha de 1M linhas, roda o fluxo ponta a ponta e falha se passar de 20min. javascript import http from \"k6/http\"; import { check, sleep } from \"k6\"; export const options = { scenarios: { um arquivo: { executor: \"shared iterations\", vus: 1, iterations: 1, maxDuration: \"25m\" } }, thresholds: { iteration duration: [\"p(95) x.status === 200 }); if (Date.now() inicio 20 60 1000) break; // guarda dura de 20min sleep(5); } check(status, { \"processou em ate 20min\": (s) = s === \"done\" }); } Prove em 3 níveis. Unitário no parser/validador (Vitest/xUnit). Integração com Testcontainers (Postgres real) medindo o tempo do bulk insert de 1M linhas. Carga k6 ponta a ponta com o threshold de 20min acima — esse é o que vale como prova do SLA no CI. Consultar depois (linhas cadastradas): Serviços AWS no case: S3 \", \"Armazena a planilha\", \"Aguenta GBs, upload direto (presigned + multipart), barato\"], [\" EventBridge / S3 Notif \", \"Dispara o job no upload\", \"Event driven — ninguém fica perguntando se chegou\"], [\" SQS \", \"Fila de jobs\", \"Desacopla, absorve pico, retry + DLQ, at least once\"], [\" ECS Fargate \", \"Worker de processamento\", \"Sem teto de 15min do Lambda; escala por tarefa\"], [\" Aurora / RDS \", \"Persiste e consulta\", \"Bulk COPY na escrita; índice + paginação na leitura\"], [\" CloudWatch \", \"Métricas, logs, alarme\", \"Observabilidade do job (duração, falhas, tamanho da fila)\"], ]} / Resiliência do job. Fila com DLQ para o que falha; retry com backoff ; idempotência por jobId ; status persistido para retomar de onde parou. Se o worker morre no meio, a mensagem volta pra fila (visibility timeout) e outro worker reprocessa — sem intervenção humana.",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
     "id": "banco-escala#_",
     "slug": "banco-escala",
     "title": "Banco de Dados & Escala",
@@ -1213,6 +1228,816 @@
       "Tracing",
       "OpenTelemetry",
       "SLO"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#_",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Prometheus & Grafana",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#prometheus-modelo-pull-exporters-e-service-discovery",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Prometheus: Modelo Pull, Exporters e Service Discovery",
+    "anchor": "prometheus-modelo-pull-exporters-e-service-discovery",
+    "text": "Prometheus é um sistema de monitoramento e alerta open source focado em métricas — números agregados no tempo, não logs nem traces. A decisão de design mais importante (e mais diferente de ferramentas como StatsD ou agentes que empurram dados sozinhos) é o modelo pull : o próprio Prometheus decide quando e o que coletar, puxando (raspando, ou scraping ) dados via HTTP de cada alvo, em vez de esperar que cada aplicação empurre ( push ) métricas pra ele. Cada alvo expõe um endpoint HTTP /metrics em texto plano (o exposition format ). O Prometheus visita esse endpoint periodicamente — o scrape interval , tipicamente 15s a 60s — e grava o resultado como uma amostra por série temporal. yaml prometheus.yml global: scrape interval: 15s evaluation interval: 15s scrape configs: job name: \"node\" static configs: targets: [\"10.0.0.11:9100\", \"10.0.0.12:9100\"] job name: \"pedidos api\" metrics path: /metrics static configs: targets: [\"pedidos api:8080\"] Pull facilita saúde e descoberta. Se um alvo não responde ao scrape, o Prometheus já sabe — a série up vai pra 0 automaticamente. No modelo push, um agente que morre silenciosamente só é percebido se alguém notar a ausência de dados. Exporters e Client Libraries Nem todo sistema fala o protocolo do Prometheus nativamente. Duas formas de instrumentar: Client libraries — bibliotecas oficiais (Go, Python, Java, .NET, Rust...) importadas direto no código da aplicação, pra expor contadores, gauges e histograms customizados em /metrics . Exporters — processos auxiliares que traduzem as métricas de um sistema de terceiros (que você não controla ou não vale a pena instrumentar) para o formato Prometheus. O mais comum é o node exporter , que expõe métricas de SO — CPU, memória, disco, rede — de qualquer máquina Linux/Windows. Outros comuns: blackbox exporter (probes de HTTP/TCP/ICMP de fora pra dentro), mysqld exporter , cadvisor (containers). Service Discovery Em ambientes dinâmicos (Kubernetes, autoscaling), listar targets fixos não escala. O Prometheus suporta service discovery nativo — kubernetes sd configs , consul sd configs , file sd configs , ec2 sd configs — que descobre alvos automaticamente e os re rotula via relabel configs antes do scrape, por exemplo usando uma annotation do Pod pra decidir se ele deve ou não ser raspado.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#tsdb-e-tipos-de-metrica",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "TSDB e Tipos de Métrica",
+    "anchor": "tsdb-e-tipos-de-metrica",
+    "text": "Toda métrica no Prometheus é identificada por um nome mais um conjunto de labels (pares chave valor). Essa combinação — nome + labels — é a chave única de uma série temporal ; cada valor distinto de label cria uma série nova, gravada em disco pelo TSDB (time series database) embutido. text http requests total{method=\"GET\", route=\"/pedidos\", status=\"200\"} http requests total{method=\"GET\", route=\"/pedidos\", status=\"500\"} Essas duas linhas são duas séries diferentes , não uma métrica com duas leituras — e isso é a raiz do problema de cardinalidade (ver Trade offs, adiante). O TSDB grava em blocos de 2h compactados no disco local, com um WAL ( write ahead log ) pra durabilidade. Por padrão retém 15 dias — suficiente pra operação do dia a dia, curto demais pra capacity planning anual (ver seção de escala). Os 4 Tipos de Métrica Só sobe (ou zera no restart do processo). Ex.: http requests total , errors total . Nunca leia o valor bruto — sempre envolva em rate() ou increase() . Sobe e desce livremente. Ex.: uso de memória, conexões abertas, tamanho de fila, temperatura. Distribui observações em buckets configuráveis ( bucket\\{le=\"...\"\\} ) mais sum e count . Permite calcular percentil no servidor com histogram quantile() , agregando entre instâncias. Calcula quantis (ex.: p50, p95) no cliente , antes de expor. Mais barato de consultar, mas os quantis não são agregáveis entre instâncias — não dá pra fazer \"média de percentil\". Um histogram por baixo do capô se parece com isto: text http request duration seconds bucket{le=\"0.1\"} 8113 http request duration seconds bucket{le=\"0.5\"} 14200 http request duration seconds bucket{le=\"1\"} 14750 http request duration seconds bucket{le=\"+Inf\"} 14827 http request duration seconds sum 3421.7 http request duration seconds count 14827 Histogram vs Summary não é só estilo. Se você precisa agregar p95 de vários pods num único número (o caso comum), só o histogram permite — via histogram quantile(0.95, sum by (le) (rate(...))) . O summary trava o cálculo por instância no momento da exposição, sem jeito de combinar depois.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#promql-na-pratica",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "PromQL na Prática",
+    "anchor": "promql-na-pratica",
+    "text": "PromQL é a linguagem de consulta do Prometheus — funcional, não declarativa como SQL. Um seletor básico já retorna um vetor instantâneo (o valor mais recente de cada série que casa os labels); acrescentar um intervalo entre colchetes, tipo [5m] , vira um vetor de range (todos os pontos daquela janela), necessário pra funções como rate() . rate() é quase sempre a resposta certa rate() calcula a taxa média de crescimento por segundo de um counter dentro da janela, e trata reset (restart do processo) automaticamente. Prefira sempre rate() a olhar o counter bruto: promql requisicoes por segundo, nos ultimos 5 minutos rate(http requests total[5m]) taxa de erro 5xx rate(http requests total{status=~\"5..\"}[5m]) irate() existe (usa só os 2 últimos pontos da janela — mais reativo, mais ruidoso) mas é raro fora de gráficos ad hoc; pra alertas e dashboards, rate() é o padrão. Percentis com histogram quantile() promql p95 de latencia HTTP, agregando todas as instancias do job histogram quantile(0.95, sum by (le) (rate(http request duration seconds bucket[5m])) ) O le ( less than or equal ) é o label que o histogram usa pra marcar os buckets — precisa estar presente no by (...) pra histogram quantile() funcionar. Agregação: by e without promql soma, mantendo so o label \"job\" (reduz cardinalidade de saida) sum by (job) ( rate(http requests total[5m]) ) soma, descartando so o label \"instance\" (mantem todo o resto) sum without (instance) ( memory consumption bytes ) Use by (...) quando você sabe exatamente quais labels quer manter; without (...) quando quer manter \"tudo, menos isso\". sum , avg , max , min , count e topk(n, ...) seguem a mesma sintaxe de agregação. Grave o que você consulta toda hora. Um histogram quantile como o de cima, rodando em 10 dashboards, é 10x o custo de avaliação. Vire uma recording rule (próxima seção) e consulte o resultado pré calculado.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#alerting-rules-e-recording-rules",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Alerting Rules e Recording Rules",
+    "anchor": "alerting-rules-e-recording-rules",
+    "text": "Regras ficam em arquivos separados, referenciados no prometheus.yml via rule files , e avaliadas no evaluation interval (padrão 15s). Cada arquivo tem groups ; cada grupo tem name e uma lista de rules — regras do mesmo grupo são avaliadas em sequência, grupos diferentes em paralelo. Recording Rules Pré computam uma expressão cara ou muito repetida e gravam o resultado como uma nova série. Usadas pra acelerar dashboards e pra dar nome estável a algo que um alerta vai consultar depois. Convenção de nome sugerida pela própria documentação: nivel:metrica:operacoes . yaml groups: name: pedidos api agregadas rules: record: job:http requests:rate5m expr: sum by (job) (rate(http requests total[5m])) record: job:http request duration seconds:p95 5m expr: histogram quantile(0.95, sum by (job, le) (rate(http request duration seconds bucket[5m])) ) Alerting Rules Uma alerting rule é uma expressão PromQL que, quando retorna algum resultado, vira um alerta pending ; se continuar retornando resultado por mais tempo que o for: , vira firing e é enviado ao Alertmanager. O for: existe justamente pra evitar alertar em todo blip passageiro. yaml groups: name: pedidos api alertas rules: alert: InstanceDown expr: up{job=\"pedidos api\"} == 0 for: 5m labels: severity: page annotations: summary: \"Instância {{ $labels.instance }} fora do ar\" description: \"{{ $labels.instance }} do job {{ $labels.job }} não responde há mais de 5 minutos.\" alert: HighErrorRate expr: job:http requests:rate5m{job=\"pedidos api\", status=~\"5..\"} 0.05 for: 10m labels: severity: warning annotations: summary: \"Taxa de erro alta em {{ $labels.job }}\" description: \"Mais de 5% das requisições falhando com 5xx nos últimos 10 minutos (valor atual: {{ $value }}).\" for: é sua proteção contra flapping. Sem ele, todo alerta dispara e resolve a cada avaliação instável. Mas for: alto demais atrasa a detecção de incidentes reais — 5 a 10 minutos é um ponto de partida razoável; ajuste pelo SLO do serviço.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#alertmanager-roteamento-silencio-e-deduplicacao",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Alertmanager: Roteamento, Silêncio e Deduplicação",
+    "anchor": "alertmanager-roteamento-silencio-e-deduplicacao",
+    "text": "O Alertmanager é um binário separado do Prometheus. O Prometheus só avalia regras e decide \"isso está firing\"; é o Alertmanager que decide quem recebe, como agrupado e com que frequência . Um ou mais Prometheus apontam pra ele via bloco alerting: no prometheus.yml . Agrupamento e Deduplicação Alertas com os mesmos labels de group by (ex.: alertname + cluster ) são agrupados numa única notificação, em vez de uma mensagem por série. Três temporizadores controlam o ritmo: group wait — espera inicial antes de mandar a primeira notificação de um grupo novo (dá tempo de outros alertas relacionados chegarem e entrarem no mesmo pacote). group interval — espera antes de mandar um novo lote pro mesmo grupo já existente. repeat interval — de quanto em quanto tempo reenviar um alerta que já foi notificado e continua firing. Se você roda Prometheus em par (HA, dois servidores avaliando as mesmas regras), o Alertmanager também deduplica — dois disparos idênticos (mesmo fingerprint de labels) viram uma notificação só, não duas. Roteamento (Routing Tree) A route raiz define o receiver padrão; routes filhas usam matchers (com suporte a regex) pra desviar alertas específicos — cada alerta desce a árvore até achar o primeiro nó que casa, ou segue avaliando irmãos mesmo depois de um match se a rota tiver continue: true . yaml route: receiver: \"time plataforma\" group by: [alertname, cluster] group wait: 30s group interval: 5m repeat interval: 4h routes: matchers: service=~\"pedidos estoque\" receiver: \"time pedidos\" routes: matchers: severity=\"critical\" receiver: \"time pedidos pager\" inhibit rules: source matchers: severity=\"critical\" target matchers: severity=\"warning\" equal: [\"alertname\", \"cluster\"] receivers: name: \"time plataforma\" slack configs: channel: \" alertas plataforma\" name: \"time pedidos pager\" pagerduty configs: routing key: \" \" Silêncio e Inibição Silence é uma regra temporária, criada manualmente (UI ou API) pra calar alertas que casem um seletor de labels durante uma janela — o caso clássico é uma manutenção programada. Inibição ( inhibit rules ) é automática: se um alerta \"source\" (ex.: severity=\"critical\" ) já está firing, alertas \"target\" (ex.: severity=\"warning\" ) com os mesmos labels em equal ficam mudos — não faz sentido avisar de latência alta num node que já está inteiro fora do ar.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#grafana-dashboards-paineis-e-fontes-de-dados",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Grafana: Dashboards, Painéis e Fontes de Dados",
+    "anchor": "grafana-dashboards-paineis-e-fontes-de-dados",
+    "text": "Grafana é a camada de visualização e (opcionalmente) alerta — e é agnóstica de fonte de dados : o mesmo dashboard pode combinar painéis vindos do Prometheus, Loki, Tempo, PostgreSQL, CloudWatch, Elasticsearch etc. lado a lado. Dashboards e Painéis (Panels) Um dashboard é uma coleção de painéis (panels) — cada painel roda uma ou mais queries contra uma data source e renderiza o resultado num visual: série temporal, stat (valor único), gauge, tabela, heatmap, bar gauge... A escolha do painel importa tanto quanto a query: p95 de latência combina melhor com série temporal (mostra tendência); \"erros nos últimos 5 min\" combina melhor com um stat grande. Fontes de Dados (Data Sources) Data sources podem ser cadastradas na UI ou provisionadas via YAML — versionável em git, reprodutível em todo ambiente novo: yaml apiVersion: 1 datasources: name: Prometheus type: prometheus url: http://prometheus:9090 isDefault: true jsonData: timeInterval: 15s name: Loki type: loki url: http://loki:3100 Provisionar múltiplas fontes assim é o que permite um painel de logs (Loki) e um painel de métricas (Prometheus) convivendo no mesmo dashboard, correlacionados pela mesma janela de tempo ou pelo mesmo trace id . Variáveis de Dashboard Variáveis ( $variavel ) viram dropdowns no topo do dashboard e evitam duplicar um dashboard por serviço, ambiente ou cluster. Uma variável job , populada por label values(up, job) , deixa a mesma query reaproveitável: promql up{job=\"$job\", instance=~\"$instance\"} Trocar o valor no dropdown re executa todos os painéis que referenciam $job — um dashboard, N serviços. Alerting Unificado O Grafana tem seu próprio motor de alerta ( unified alerting ), independente do Alertmanager do Prometheus — e ele consegue alertar sobre qualquer data source, não só Prometheus (dá pra alertar em cima de uma query no Postgres, por exemplo). Os conceitos centrais: Query + condição + intervalo de avaliação, parecido com uma alerting rule do Prometheus — mas roda dentro do próprio Grafana. Destino da notificação (Slack, e mail, webhook, PagerDuty...) — substituem os antigos \"notification channels\". Árvore de roteamento por label, no mesmo espírito da route do Alertmanager, mas configurada no Grafana. Mesma ideia do Alertmanager: muta notificações por seletor de label durante uma janela — só que gerenciado na UI do Grafana. Dois motores de alerta, uma escolha a fazer. Times que já vivem 100% em Prometheus costumam manter o Alertmanager como fonte única da verdade pra alertas de métricas. Times com fontes de dados variadas (Postgres, CloudWatch, Loki) tendem a centralizar tudo no alerting unificado do Grafana — inclusive apontando o pra usar o mesmo Alertmanager como backend de notificação, se quiser o melhor dos dois mundos.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#como-tudo-se-junta-do-scrape-ao-dashboard-e-ao-alerta",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Como Tudo se Junta: do Scrape ao Dashboard e ao Alerta",
+    "anchor": "como-tudo-se-junta-do-scrape-ao-dashboard-e-ao-alerta",
+    "text": "O TSDB é o ponto de junção: alimenta dois consumidores independentes — o Grafana, que só lê (consulta ao vivo, nada é alterado), e o rule evaluator do próprio Prometheus, que também só lê, mas grava de volta (recording rules) ou dispara pro Alertmanager (alerting rules). Prometheus e Grafana nunca se comunicam \"por dentro\" — a integração inteira é uma API HTTP de consulta (PromQL sobre /api/v1/query ), a mesma que você usaria via curl .",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#trade-offs-pull-vs-push-cardinalidade-e-escala",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Trade-offs: Pull vs Push, Cardinalidade e Escala",
+    "anchor": "trade-offs-pull-vs-push-cardinalidade-e-escala",
+    "text": "Pull vs Push Pull é o padrão do Prometheus, mas nem todo workload cabe nele. Jobs batch/cron de vida curta podem terminar antes do próximo scrape chegar — nesse caso, nada é coletado. A saída é o Pushgateway : o job faz push pra ele antes de sair, e o Prometheus então faz scrape do Pushgateway normalmente — pull continua sendo o mecanismo real; o Pushgateway só existe pra dar um alvo estável e \"sempre presente\" pra jobs efêmeros. scrape interval \", \"O job, uma vez, antes de terminar\"], [\"Caso de uso ideal\", \"Serviços de vida longa, sempre no ar\", \"Batch/cron de vida curta\"], [\"Detecção de alvo morto\", \"Automática ( up == 0 )\", \"Nenhuma — métrica antiga fica presa até ser apagada manualmente\"], [\"Ponto único de falha\", \"Não — cada Prometheus decide sozinho\", \"Sim, se o Pushgateway cair ou não for dimensionado\"], ]} / Pushgateway não é \"push genérico\". Ele não expira métricas sozinho — se você usá lo pra tudo (em vez de só jobs batch de fato efêmeros), acumula métricas de execuções antigas pra sempre, e o Prometheus passa a \"ver\" um serviço como vivo quando não está. Cardinalidade Cada label novo multiplica o número de séries pelos valores distintos que ele assume. Um label de baixa cardinalidade ( status , method ) custa pouco; um de alta cardinalidade ( user id , request id , URL completa com querystring) pode multiplicar a base de séries por milhares e estourar a memória do Prometheus. É o trade off central de métricas: granularidade por label custa memória e velocidade de query — não existe granularidade de graça. Retenção e Escala Horizontal O Prometheus sozinho é single node : TSDB local, sem replicação nativa, retenção prática limitada pelo disco (padrão 15 dias). Pra retenção longa (meses ou anos) e visão global multi cluster, a métrica sai do Prometheus via remote write pra um backend de longo prazo: Sidecar + object storage (S3/GCS) + Querier global. Mantém o Prometheus existente como fonte, adiciona downsampling e retenção \"infinita\" em cima. Multi tenant, horizontalmente escalável, recebe via remote write . Base original de onde o Mimir nasceu (fork). Fork do Cortex mantido pela Grafana Labs. Mesma proposta — escala horizontal, multi tenant, retenção longa — com integração de primeira classe ao ecossistema Grafana.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "prometheus-grafana#boas-praticas-e-pegadinhas",
+    "slug": "prometheus-grafana",
+    "title": "Prometheus & Grafana",
+    "category": "infra",
+    "section": "Boas Práticas e Pegadinhas",
+    "anchor": "boas-praticas-e-pegadinhas",
+    "text": "Cardinalidade alta explode custo. Nunca use como label algo com cardinalidade não limitada: user id , email , request id , URL completa com querystring, timestamp. Cada valor novo é uma série nova, pra sempre (ou até o retention expirar) — e a fatura de memória do Prometheus sobe junto. Alerte em sintomas, não em causas internas. Prefira \"p95 de latência acima do SLO\" a \"CPU do pod acima de 80%\" — CPU alta nem sempre incomoda o usuário, e p95 ruim sempre incomoda. Menos alertas, mais sinal: quem recebe pager cansado para de olhar. rate() assume crescimento monotônico — aplicar num gauge (que sobe e desce) produz números sem sentido. Se uma query aparece em 3+ dashboards ou alimenta um alerta, vire recording rule — evita recalcular o mesmo histogram quantile pesado toda vez. Exporte dashboards como JSON (ou gere via Jsonnet/grafonnet) e versione em git. Editar só na UI perde histórico e não sobrevive a um clique errado. Se auditoria ou capacity planning exigem 1 ano de histórico, decida o remote write (Thanos/Mimir/Cortex) no dia 1 — migrar depois de estourar os 15 dias padrão é bem mais doloroso.",
+    "tags": [
+      "Prometheus",
+      "Grafana",
+      "PromQL",
+      "Métricas"
+    ]
+  },
+  {
+    "id": "elk-loki#_",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "ELK & Loki",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#elk-e-loki-duas-filosofias-de-log",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "ELK e Loki: duas filosofias de log",
+    "anchor": "elk-e-loki-duas-filosofias-de-log",
+    "text": "Agregação de logs é o processo de coletar, centralizar e tornar buscável o volume de linhas geradas por dezenas — ou milhares — de serviços. No mercado, duas filosofias dominam essa tarefa, e elas resolvem o mesmo problema de formas opostas. Elasticsearch indexa o documento inteiro: todo campo vira buscável, filtrável e agregável. É, na prática, um motor de busca (mesma raiz do Lucene) aplicado a logs — poderoso e caro. Indexa só as labels — poucos metadados de baixa cardinalidade. O conteúdo da linha fica comprimido em object storage e só é lido no momento da query. Muito mais barato de operar. Não são inimigos. Muita empresa roda os dois: Loki pro volume alto de log de aplicação (barato, integrado ao Grafana) e Elasticsearch pra onde full text rico ou compliance realmente importa (auditoria, segurança, busca ad hoc complexa).",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#stack-elk-elastic",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "Stack ELK / Elastic",
+    "anchor": "stack-elk-elastic",
+    "text": "ELK é o acrônimo dos três projetos originais da Elastic que formam o pipeline clássico de log — hoje oficialmente chamado de Elastic Stack (o \"B\" de Beats entrou depois). Cada peça resolve uma etapa da cadeia. Elasticsearch: o motor de busca full text Elasticsearch guarda documentos JSON e os torna buscáveis quase em tempo real através de um índice invertido : para cada termo (token) que aparece nos logs, ele mantém uma lista dos documentos que contêm aquele termo. Buscar \"timeout\" não significa escanear todo log — é um lookup direto termo → lista de documentos. Esse processo de quebrar texto em tokens ( analysis ) roda tanto na indexação quanto na busca, com o mesmo analisador — senão os tokens não batem e a busca simplesmente não encontra nada. Um documento de log típico, no formato do Elastic Common Schema (ECS): json { \"@timestamp\": \"2026 07 22T14:03:11.482Z\", \"log.level\": \"error\", \"service.name\": \"pedidos api\", \"trace.id\": \"4bf92f3577b34da6a3ce929d0e0e4736\", \"event.dataset\": \"pedidos api.log\", \"http.response.status code\": 500, \"message\": \"falha ao debitar estoque: timeout no servico de estoque\", \"order.id\": \"PED 1234\" } Pra escalar horizontalmente, um índice é dividido em shards — cada shard é um índice Lucene independente, distribuído entre os nós do cluster e buscável em paralelo. Replicas são cópias de cada shard primária: dão alta disponibilidade (sobrevivem à perda de um nó) e capacidade extra de leitura. text 3 shards primarias + 1 replica de cada = 6 shards no total, espalhados pelo cluster PUT /logs pedidos api 2026.07.22 { \"settings\": { \"number of shards\": 3, \"number of replicas\": 1 } } Um índice novo por dia ( logs pedidos api 2026.07.22 ) é o padrão do mercado: facilita aplicar retenção — apagar índices inteiros antigos é muito mais barato que apagar documento por documento — e mantém cada shard num tamanho gerenciável. Logstash: pipeline de ingestão Logstash processa eventos em três estágios sequenciais: input (recebe — beats, kafka, arquivo, tcp), filter (transforma) e output (envia — Elasticsearch, Loki, Kafka, stdout). O filtro mais característico é o grok : casa a linha de log contra um padrão nomeado (um conjunto de regex por trás) e extrai campos de um texto originalmente não estruturado. ruby input { beats { port = 5044 recebe eventos encaminhados pelo Filebeat } } filter { grok { extrai method, path, status, bytes etc. de uma linha estilo Apache/Nginx match = { \"message\" = \"%{COMBINEDAPACHELOG}\" } } geoip { source = \"clientip\" enriquece com pais/cidade a partir do IP } mutate { remove field = [\"message\"] descarta o texto bruto depois de parseado } } output { elasticsearch { hosts = [\"http://es01:9200\"] index = \"logs webapp %{+YYYY.MM.dd}\" } } Logstash roda em uma JVM e pesa mais que os Beats — por isso é comum reservá lo pra transformações que realmente precisam dele (grok, enrich, roteamento condicional) e pular direto Filebeat → Elasticsearch quando o log já nasce estruturado. Kibana: busca e dashboards Kibana é a camada de visualização da stack: Discover pra busca ad hoc (com KQL, a Kibana Query Language — uma sintaxe simplificada traduzida internamente pra Query DSL), Dashboards com painéis reutilizáveis, Dev Tools com um console pra falar Query DSL puro (JSON) direto com o Elasticsearch, e Alerting pra regras sobre os dados indexados. Beats e Filebeat: coleta na origem Beats é a família de coletores leves da Elastic, escritos em Go — sem JVM, baixo consumo de memória: Filebeat (arquivos de log), Metricbeat (métricas de sistema/serviço), Packetbeat (tráfego de rede), Winlogbeat (event log do Windows). O Filebeat acompanha arquivos (tail), lida com multiline (stack traces contando como uma única entrada) e tem backpressure — não afoga o Logstash ou o Elasticsearch se eles engasgarem. yaml filebeat.inputs: type: log paths: /var/log/pedidos api/ .log fields: service: pedidos api output.logstash: hosts: [\"logstash:5044\"]",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#grafana-loki-logs-indexados-por-labels",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "Grafana Loki: logs indexados por labels",
+    "anchor": "grafana-loki-logs-indexados-por-labels",
+    "text": "Loki é descrito pelo próprio Grafana Labs como \"Prometheus para logs\" : mesmo modelo mental de labels, mesma filosofia horizontally scalable e multi tenant — e, a diferença que importa, sem indexação full text do conteúdo da linha. Loki indexa só a combinação de labels (ex.: {app=\"pedidos api\", env=\"prod\"} ), que define uma stream . O conteúdo de cada stream é comprimido em chunks guardados em object storage (S3, GCS, filesystem) — muito mais barato de reter por longos períodos. Na hora da query, o Loki primeiro localiza as streams pelas labels (índice pequeno e rápido) e só então faz o equivalente a um grep/regex nos chunks já filtrados — a parte cara da busca roda sobre um subconjunto pequeno dos dados, não sobre a base inteira. LogQL é a linguagem de query: um seletor de stream {...} seguido de um pipeline opcional de filtros e parsers. logql streams do namespace loki dev, filtro de texto, parse logfmt, filtro por campo extraido {container=\"query frontend\", namespace=\"loki dev\"} = \"metrics.go\" logfmt duration 10s metric query: taxa de linhas de erro por segundo nos ultimos 5 minutos, por ambiente sum(rate({app=\"pedidos api\"} = \"ERROR\" [5m])) by (env) Promtail e agentes: coleta pro Loki Promtail (o agente clássico do Loki — hoje convergindo pro Grafana Alloy) descobre arquivos, anexa labels e roda pipeline stages que parseiam a linha antes de enviar. A diferença crítica em relação ao Filebeat: aqui você decide explicitamente quais campos extraídos viram labels (indexados) e quais ficam só no corpo da linha. yaml scrape configs: job name: pedidos api static configs: targets: [localhost] labels: job: pedidos api path : /var/log/pedidos api/ .log pipeline stages: json: expressions: level: level trace id: trace id labels: level: so campo de baixa cardinalidade vira label clients: url: http://loki:3100/loki/api/v1/push Loki nasceu pra viver dentro do Grafana — a mesma UI (Explore) que já mostra métricas do Prometheus e traces do Tempo mostra os logs, com exemplars e derived fields linkando um trace id do log direto pro trace correspondente. É essa integração nativa, mais que o LogQL em si, que puxa quem já usa Prometheus/Grafana pra escolher Loki.",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#structured-logging-e-correlacao-por-trace-id",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "Structured Logging e Correlação por trace_id",
+    "anchor": "structured-logging-e-correlacao-por-trace-id",
+    "text": "Log de texto solto (algo como \"erro ao processar pedido 1234\") funciona pra leitura humana, mas quebra agregação: não dá pra filtrar \"só os pedidos com status 500\" ou calcular duração média sem um campo dedicado pra isso. Structured logging — JSON ou logfmt (chave=valor) — resolve o problema nos dois mundos, mas de formas diferentes: No Elasticsearch , cada campo estruturado vira um campo mapeado, tipado e agregável nativamente — é a diferença entre só buscar texto e realmente cruzar dados ( avg(duration) where status=500 ). No Loki , o conteúdo nunca é indexado — então parsear em campos ( json , logfmt ) acontece na hora da query, sobre os chunks já filtrados por label. Não é de graça, mas é ordens de magnitude mais barato que um filtro ~ \". regex. \" livre sobre tudo. text level=error msg=\"falha ao debitar estoque\" service=pedidos api trace id=4bf92f3577b34da6a3ce929d0e0e4736 order id=PED 1234 O campo que mais paga dividendo é o trace id (idealmente propagado via OpenTelemetry/W3C traceparent através de todos os serviços). Com ele, um pico de latência visto no Tempo vira um trace id ; esse mesmo id filtra direto no Kibana ou no Loki e traz toda linha de log — de todo serviço — que tocou aquela requisição específica. Sem isso, correlacionar logs distribuídos só por timestamp é adivinhação.",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#fluxo-de-ingestao-do-app-ao-dashboard",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "Fluxo de Ingestão: do App ao Dashboard",
+    "anchor": "fluxo-de-ingestao-do-app-ao-dashboard",
+    "text": "O formato do pipeline é o mesmo nos dois mundos — só o meio do caminho muda. As duas etapas de armazenamento aparecem lado a lado abaixo porque, na prática, você escolhe uma delas (ou roda as duas, para dados diferentes).",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#elk-vs-loki-qual-usar-quando",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "ELK vs Loki: qual usar quando",
+    "anchor": "elk-vs-loki-qual-usar-quando",
+    "text": "Resumindo lado a lado os pontos que mais pesam na decisão: Full text — todo campo do documento\", \" Só labels — conteúdo não é indexado\"], [\"Custo de armazenamento\", \"Alto — o índice cresce junto com o volume de log\", \"Baixo — object storage barato + índice pequeno\"], [\"Escala / operação\", \"Cluster com estado (JVM, heap, shards pra gerenciar)\", \"Componentes simples na frente de object storage\"], [\"Linguagem de busca\", \" Query DSL (JSON) ou KQL no Kibana\", \" LogQL — sintaxe parecida com PromQL\"], [\"Ecossistema\", \"Kibana, Beats, Logstash, X Pack (security/alerting)\", \"Grafana, Prometheus, Tempo, Promtail/Alloy\"], [\"Melhor encaixe\", \"Full text rico, auditoria/compliance, busca ad hoc complexa\", \"Alto volume de log de app, observability unificada\"], ]} /",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "elk-loki#boas-praticas-e-pegadinhas",
+    "slug": "elk-loki",
+    "title": "ELK & Loki",
+    "category": "infra",
+    "section": "Boas Práticas e Pegadinhas",
+    "anchor": "boas-praticas-e-pegadinhas",
+    "text": "Cardinalidade é a armadilha nº 1 do Loki. Nunca transforme campos de alta cardinalidade ( user id , request id , IP) em labels — cada combinação única vira uma stream nova, e streams demais explodem memória e deixam o Loki lento (o mesmo anti padrão de cardinalidade do Prometheus). Deixe labels pra um conjunto pequeno e estável ( service , env , level ) e resolva o resto com json ou logfmt na hora da query. Retenção é o custo oculto do Elasticsearch. Indexar tudo pra sempre não escala — heap, disco e número de shards crescem junto. Use ILM (Index Lifecycle Management) com tiers hot → warm → cold → delete, um índice novo por rotação, e desative a indexação ( \"index\": false ) em campos que você nunca vai buscar. Nunca logue PII. Senha, token, cartão, CPF — tanto o índice do Elasticsearch quanto os chunks do Loki são replicados e retidos por semanas ou meses. Mascare no ponto de origem (na instrumentação) ou nunca capture; use o trace id pra correlacionar sem precisar expor o dado sensível em si. Mais alguns pontos que só se aprende operando os dois em produção: Shard pequeno demais desperdiça overhead (cada um custa memória e handles de arquivo); shard gigante fica lento pra realocar. Regra prática: manter cada shard entre poucos GB e uns 50GB. Pipeline com grok pesado numa JVM subdimensionada vira o ponto lento da cadeia inteira. Pra logs que já nascem estruturados, considere pular o Logstash e ir direto Beats/Promtail → store. O header X Scope OrgID isola tenants dentro do mesmo Loki — útil pra separar times ou produtos sem subir um cluster por equipe. Log de debug em produção, 100% do tempo, é volume que ninguém lê. Amostre ou suba o nível só sob demanda (feature flag / log dinâmico) em vez de pagar o custo o tempo todo.",
+    "tags": [
+      "Elasticsearch",
+      "Kibana",
+      "Loki",
+      "Logs"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#_",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Jaeger, Tempo & Zipkin",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#modelo-de-trace-e-span",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Modelo de Trace e Span",
+    "anchor": "modelo-de-trace-e-span",
+    "text": "Um trace representa a jornada completa de uma requisição por vários serviços. Ele é formado por spans — cada span é uma unidade de trabalho com início e fim (uma chamada HTTP, uma query, uma etapa de processamento). Ligados em árvore por relação parent/child , os spans reconstroem exatamente por onde a requisição passou e quanto tempo cada etapa levou. Dois identificadores amarram tudo isso: trace id — 16 bytes (32 caracteres hex), compartilhado por todo span do trace. É a chave que o backend usa pra agrupar tudo de volta numa árvore só. span id — 8 bytes (16 caracteres hex), único por span. Todo span (exceto o raiz) carrega também um parentSpanId , apontando pro span que o originou — é essa referência que transforma uma lista solta de spans numa árvore. Além do básico, cada span carrega atributos (pares chave valor como http.method , db.statement , order id — o mesmo cuidado com cardinalidade do módulo de Observabilidade se aplica aqui), events (anotações com timestamp dentro do próprio span, tipo um log embutido) e links — referências a spans de outros traces. O caso clássico de link: um consumidor de fila processa um lote que mistura mensagens de vários traces diferentes; o span do lote não pode ter vários pais ao mesmo tempo, então ele linka de volta pra cada trace de origem em vez de virar filho de todos. Todo span também tem um kind , que descreve seu papel na comunicação: Lado que recebe ( SERVER ) e lado que chama ( CLIENT ) numa comunicação síncrona — ex.: a API que atende e o HTTP client que fez a chamada. Trabalho interno ao serviço, sem cruzar rede — ex.: uma etapa de cálculo ou validação dentro do mesmo processo. Mensageria assíncrona: quem publica ( PRODUCER ) e quem consome ( CONSUMER ) uma fila ou tópico — ex.: Kafka, RabbitMQ, SQS. Pra esse trace fazer sentido entre serviços diferentes, o contexto precisa propagar de um processo pro outro. O padrão moderno é o W3C Trace Context , no header traceparent : text traceparent: 00 4bf92f3577b34da6a3ce929d0e0e4736 00f067aa0ba902b7 01 Da esquerda pra direita: versão ( 00 ), trace id de 16 bytes, span id do span que originou a chamada (do ponto de vista de quem recebe, é o \"parent id\") e trace flags de 8 bits ( 01 = sampled). Um header tracestate opcional carrega dados extras específicos de vendor — é por ele, inclusive, que sistemas baseados em B3 (Zipkin) interoperam com o mundo W3C sem reescrever a malha inteira, como vamos ver na seção de Zipkin. Um span serializado (formato próximo ao que trafega via OTLP) se parece com isto: json { \"traceId\": \"4bf92f3577b34da6a3ce929d0e0e4736\", \"spanId\": \"00f067aa0ba902b7\", \"parentSpanId\": \"a2fb4a1d1a96d312\", \"name\": \"POST /pedidos\", \"kind\": \"SERVER\", \"startTimeUnixNano\": \"1721654591000000000\", \"endTimeUnixNano\": \"1721654591095000000\", \"attributes\": { \"http.method\": \"POST\", \"http.route\": \"/pedidos\", \"http.status code\": 200, \"peer.service\": \"estoque svc\" }, \"status\": { \"code\": \"OK\" } } Por que startTimeUnixNano vem como string? Não é frescura — é a regra de mapeamento JSON do protobuf: campos int64 viram string no JSON pra não perder precisão (o tipo number do JavaScript não representa com segurança inteiros de 64 bits). Todo span que passa por OTLP segue essa convenção.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#jaeger",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Jaeger",
+    "anchor": "jaeger",
+    "text": "CNCF Graduated Uber · 2015 Criado na Uber e doado à Cloud Native Computing Foundation , o Jaeger é hoje um projeto graduado do CNCF — mesma categoria de maturidade do Kubernetes e do Prometheus. Historicamente, sua arquitetura tem quatro papéis: Processo auxiliar (sidecar ou daemonset) que recebia spans via UDP da aplicação e fazia batching antes de mandar pro Collector. Com exportação OTLP direta da app virando padrão, o Agent ficou opcional — muita instalação nova pula direto pro Collector. Recebe os spans, valida, aplica processamento em lote e grava no storage. Ponto central de ingestão do cluster. Serviço de API que busca e recupera traces do storage — por trace id , serviço, operação, intervalo de tempo, tags ou grafo de dependências entre serviços. Interface web que consome a API do Query: busca, timeline de spans, comparação entre traces, grafo de dependências. Jaeger v2 é, literalmente, um OpenTelemetry Collector. Desde a v2, o Jaeger parou de manter um Collector próprio do zero e passou a ser uma distribuição do OTel Collector com um exporter de storage embutido. Na prática: o mesmo pipeline de ingestão aceita OTLP , o protocolo nativo Jaeger e o formato Zipkin ao mesmo tempo — o que explica por que instrumentação antiga em Zipkin continua funcionando direto contra um Jaeger moderno. O storage é onde a escolha de operação pesa mais: Colunar, escrita rápida, escala horizontalmente bem. Opção de produção mais comum em fleets grandes. Pode compartilhar o mesmo cluster usado pra logs. Bom pra busca por tags, mais pesado em recursos que o Cassandra. Key value embarcado, sem dependência externa. Usado no modo all in one — ótimo pra dev e ambientes pequenos, não pra produção em escala. Um pipeline mínimo de ingestão OTLP no Jaeger v2: yaml jaeger v2 aceita otlp, protocolo nativo jaeger e zipkin no mesmo pipeline receivers: otlp: protocols: grpc: endpoint: 0.0.0.0:4317 http: endpoint: 0.0.0.0:4318 service: pipelines: traces: receivers: [otlp, jaeger, zipkin] processors: [batch] exporters: [jaeger storage exporter]",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#grafana-tempo",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Grafana Tempo",
+    "anchor": "grafana-tempo",
+    "text": "Grafana Labs Só object storage A proposta do Tempo é radical: nada de cluster de banco pra tracing . Ele guarda tudo direto em object storage — S3, GCS ou Azure Blob Storage — sem precisar operar um Cassandra ou Elasticsearch só pra isso. Isso derruba o custo de operação em ordens de magnitude comparado a Jaeger ou Zipkin em escala. yaml tempo armazenamento 100% em object storage, sem cluster de indice separado storage: trace: backend: s3 s3: bucket: tempo traces endpoint: s3.amazonaws.com access key: ${S3 ACCESS KEY} secret key: ${S3 SECRET KEY} distributor: receivers: otlp: protocols: grpc: endpoint: 0.0.0.0:4317 http: endpoint: 0.0.0.0:4318 O preço dessa economia é um índice deliberadamente mínimo — essencialmente um lookup por trace id , em vez de indexar cada atributo de cada span. Por isso o Tempo depende de uma linguagem de consulta estrutural, a TraceQL (inspirada em LogQL e PromQL), pra filtrar por atributos, duração e status sem precisar de um índice pesado por trás: text { resource.service.name = \"pedidos api\" && span.http.status code = 500 && duration 200ms } Onde o Tempo realmente se diferencia é na correlação nativa dentro do Grafana: trace to logs pula do span exato pros logs do Loki que compartilham o mesmo trace id , e trace to metrics funciona via o metrics generator , que deriva métricas de span ( span metrics , service graphs ) e faz remote write pro Prometheus — dali nascem os exemplars que levam de um pico no gráfico de latência direto pro trace que causou o pico. Nem Jaeger nem Zipkin têm esse fechamento nativo com os outros dois pilares.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#zipkin",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Zipkin",
+    "anchor": "zipkin",
+    "text": "O pioneiro Twitter · 2012 O Zipkin nasceu no Twitter em 2012, inspirado no paper do Dapper do Google — é literalmente o avô do tracing distribuído open source, anterior a OpenTracing e a OpenTelemetry. Seu modelo de span é deliberadamente simples: um timestamp e uma duration únicos (em microssegundos, sem start/end separados), localEndpoint / remoteEndpoint (serviço + IP + porta) e tags como um mapa plano string para string — sem atributos tipados, sem events, sem links. json { \"traceId\": \"4bf92f3577b34da6a3ce929d0e0e4736\", \"id\": \"00f067aa0ba902b7\", \"parentId\": \"a2fb4a1d1a96d312\", \"kind\": \"SERVER\", \"name\": \"post\", \"timestamp\": 1721654591000000, \"duration\": 95000, \"localEndpoint\": { \"serviceName\": \"pedidos api\", \"ipv4\": \"10.0.4.12\" }, \"tags\": { \"http.path\": \"/pedidos\", \"http.status code\": \"200\" } } O servidor Zipkin é um jar Java 17+ (construído sobre Armeria, com Spring Boot por baixo — mas não deve ser tratado como uma aplicação Spring Boot convencional). Por padrão usa storage em memória; em produção, as opções são Cassandra, Elasticsearch ou MySQL. O coletor HTTP padrão escuta em POST /api/v2/spans na porta 9411 , e também aceita ingestão via Kafka, RabbitMQ, ActiveMQ, gRPC ou Pulsar. A propagação nativa do Zipkin não é o traceparent do W3C — é o formato B3 , seja em headers separados ou num único header compacto: text X B3 TraceId: 4bf92f3577b34da6a3ce929d0e0e4736 X B3 SpanId: 00f067aa0ba902b7 X B3 ParentSpanId: a2fb4a1d1a96d312 X B3 Sampled: 1 text b3: 4bf92f3577b34da6a3ce929d0e0e4736 00f067aa0ba902b7 1 a2fb4a1d1a96d312 É por isso que o Zipkin ainda é comum em stacks legadas e Spring : versões mais antigas do Spring Cloud Sleuth (antes do Micrometer Tracing) e proxies como Envoy/Istio historicamente usavam B3 como padrão. A boa notícia é que não é preciso reinstrumentar nada pra sair do Zipkin — como Jaeger e Tempo aceitam o formato Zipkin nativamente na ingestão, dá pra apontar essa instrumentação antiga pra um backend moderno sem tocar no código da aplicação.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#sampling-head-based-vs-tail-based",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Sampling: Head-Based vs Tail-Based",
+    "anchor": "sampling-head-based-vs-tail-based",
+    "text": "Guardar 100% dos traces em produção não escala — o custo de rede, processamento e armazenamento cresce junto com o tráfego. Sampling decide quais traces sobrevivem, e existem duas estratégias opostas: Decisão tomada no início do trace, no span raiz — antes de saber como a requisição termina. Normalmente probabilística (ex.: guarda 5% de tudo) e propaga a mesma decisão pra todos os spans filhos via o próprio traceparent /B3. Simples e barata de operar. Decisão tomada depois que o trace inteiro termina, olhando o resultado real (erro, latência alta, rota específica). Guarda quase 100% do que importa e descarta o resto — mas exige acumular todos os spans do trace no Collector antes de decidir, com roteamento consistente pra garantir que todo span do mesmo trace chegue na mesma instância. Sampling baixo e cego esconde exatamente o que você mais precisa investigar. Com decisão 100% head based numa taxa fixa (ex.: 1%), a escolha é feita antes de saber o desfecho — logo tem a mesma chance de descartar o erro raro de madrugada que descartaria uma chamada saudável qualquer. Em produção, combine uma taxa head based baixa (custo previsível) com sampling tail based, ou pelo menos uma regra fixa de \"sempre guarda erro e p99\" — o que é raro e caro de investigar não pode ser jogado fora por sorteio.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#ingestao-do-sdk-ao-backend",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Ingestão: do SDK ao Backend",
+    "anchor": "ingestao-do-sdk-ao-backend",
+    "text": "Do código instrumentado até a tela de busca, a telemetria de tracing passa por um caminho padronizado — o mesmo pipeline serve Jaeger, Tempo ou Zipkin como destino final:",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#comparacao-entre-backends",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Comparação entre Backends",
+    "anchor": "comparacao-entre-backends",
+    "text": "Cassandra / Elasticsearch / Badger (embarcado)\", \" Só object storage — S3, GCS, Azure Blob\", \" Cassandra / Elasticsearch / MySQL / in memory\"], [\"Custo em escala\", \"Médio alto — cluster de Cassandra/ES pra manter\", \" Baixo — object storage é ordens de magnitude mais barato\", \"Médio — mesmo perfil de custo do Jaeger\"], [\"Índice / query\", \"Índice completo por serviço, operação e tags\", \"Índice mínimo (trace ID) + TraceQL pra busca estrutural\", \"Índice por serviço/tag, conforme o storage escolhido\"], [\"Correlação logs/métricas\", \"Manual, via trace id compartilhado\", \" Nativa — trace to logs (Loki) e trace to metrics (exemplars, span metrics)\", \"Nenhuma nativa\"], [\"Ingestão OTLP\", \"Nativa — o Collector do Jaeger v2 é um OTel Collector\", \"Nativa — o distributor recebe OTLP direto\", \"Via exporter Zipkin do Collector — a API própria (v2) não fala OTLP\"], [\"Maturidade / origem\", \"CNCF graduated — Uber, 2015\", \"Grafana Labs, 2020\", \" O pioneiro — Twitter, 2012\"], ]} / Na prática: se sua stack de métricas e logs já é Grafana + Prometheus + Loki, o Tempo fecha o tripé com o menor custo operacional. Se você precisa de um backend de tracing standalone, maduro e battle tested, o Jaeger é a escolha mais estabelecida. O Zipkin raramente é a escolha pra um projeto novo hoje — mas se uma stack Java/Spring mais antiga já fala B3/Zipkin, não é preciso reinstrumentar nada: aponte pro Jaeger ou pro Tempo, que aceitam o formato nativamente.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "jaeger-tempo-zipkin#boas-praticas",
+    "slug": "jaeger-tempo-zipkin",
+    "title": "Jaeger, Tempo & Zipkin",
+    "category": "infra",
+    "section": "Boas Práticas",
+    "anchor": "boas-praticas",
+    "text": "Contexto não propaga sozinho em filas. traceparent /B3 seguem de graça em chamadas HTTP/gRPC síncronas via instrumentação automática, mas em mensageria (Kafka, RabbitMQ, SQS) alguém precisa copiar o contexto pros headers da mensagem na publicação e recriá lo no consumo — senão cada mensagem começa um trace novo e desconectado. Se o consumidor processa um lote misturando várias origens, use links em vez de forçar um parent só. Nunca acople o código de negócio a um SDK específico de Jaeger, Tempo ou Zipkin. Instrumente com o SDK OTel e escolha o backend só na configuração do exporter/Collector — trocar de backend vira redeploy de config, não reescrita de código. Combine uma taxa head based baixa com tail based, ou no mínimo uma regra de sempre guardar erro e p99. Ajuste por rota: checkout e pagamento merecem mais amostragem que um health check. Propague o trace id pros logs estruturados e use exemplars nas métricas. Um clique deve levar do gráfico de latência pro trace exato, e do trace pro log exato — sem grep manual. O name do span é a rota ou operação ( POST /pedidos ), não a URL completa com IDs. Detalhes de alta cardinalidade (order id, user id) vão em atributos, nunca no nome. Trace é caro e raramente precisa de mais que alguns dias a poucas semanas de retenção — diferente de métricas, que valem meses ou anos pra enxergar tendência. Tracing retrofit é dor: reconstruir contexto perdido depois que o sistema já está em produção custa muito mais do que instrumentar desde o início.",
+    "tags": [
+      "Jaeger",
+      "Tempo",
+      "Zipkin",
+      "Tracing"
+    ]
+  },
+  {
+    "id": "opentelemetry#_",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "OpenTelemetry",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#o-que-o-opentelemetry-resolve",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "O Que o OpenTelemetry Resolve",
+    "anchor": "o-que-o-opentelemetry-resolve",
+    "text": "OpenTelemetry (OTel) nasceu em 2019 da fusão de dois projetos concorrentes — OpenTracing e OpenCensus — sob o guarda chuva da CNCF, hoje um dos projetos com maior atividade de contribuição da fundação, atrás apenas do Kubernetes. O problema que resolve é caro de sentir na pele: antes do OTel, cada backend de observabilidade (Jaeger, Zipkin, Datadog, New Relic...) tinha seu próprio SDK proprietário. Instrumentar uma aplicação significava atrelar o código a um vendor específico — trocar de backend depois virava um projeto de meses, reescrevendo chamadas de instrumentação espalhadas pelo código inteiro. Cada backend com SDK próprio. Trocar Jaeger por Datadog = reescrever instrumentação em todos os serviços. Logs, métricas e traces com bibliotecas e formatos diferentes, sem correlação nativa entre eles. Uma única instrumentação (API/SDK) por linguagem. Exporta via OTLP para qualquer backend compatível. Trocar de vendor = mudar config do exporter, não o código da aplicação. OTel padroniza os três pilares — traces, métricas e logs — sob uma única especificação, um único conjunto de SDKs por linguagem e um protocolo de transporte comum (OTLP). OTel não substitui Jaeger, Prometheus ou Datadog — ele os alimenta. Não é um backend: não tem UI, não guarda dado por conta própria. A pergunta certa não é \"OTel ou Prometheus?\", é \"instrumento com OTel e escolho Prometheus (ou qualquer outro) como backend\". São camadas diferentes — instrumentação/transporte vs. armazenamento/visualização.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#arquitetura-api-sdk-collector-e-otlp",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "Arquitetura — API, SDK, Collector e OTLP",
+    "anchor": "arquitetura-api-sdk-collector-e-otlp",
+    "text": "A arquitetura do OTel combina quatro peças: API , SDK , Collector e o protocolo OTLP que os conecta. API vs. SDK Apenas interfaces e tipos: Tracer , Meter , Logger . Bibliotecas e frameworks devem depender só da API — se a aplicação não configurar um SDK, as chamadas viram no op (custo praticamente zero). É o que permite que uma lib de terceiros seja instrumentável sem forçar um SDK concreto em quem a consome. Implementação de fato: samplers, span processors, exporters, detecção de resource ( service.name , host, container). Configurado uma única vez no bootstrap da aplicação — é o que aparece no bloco de setup mais adiante. Collector e o Protocolo OTLP O Collector é um processo separado da aplicação: recebe telemetria de várias fontes ( receivers ), transforma no meio do caminho ( processors — filtra, enriquece, faz batching e sampling) e envia a um ou mais destinos ( exporters ). É opcional — a app pode exportar OTLP direto para um backend — mas em qualquer ambiente de produção é o padrão recomendado (motivos na seção dedicada a ele, mais abaixo). O OTLP (OpenTelemetry Protocol) é o protocolo de transporte único para os três sinais: Protobuf sobre gRPC (porta 4317 ) ou sobre HTTP (porta 4318 ). É o \"cano padronizado\" que conecta SDK → Collector → backend, desde que o backend fale OTLP nativamente — a maioria fala hoje. App gera telemetria via SDK → exporta OTLP (gRPC/HTTP) → Collector processa (batch, sampling, transformação) → distribui para Jaeger/Tempo, Prometheus, Loki e/ou Datadog simultaneamente, sem mudar código da aplicação.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#instrumentacao-automatica-vs-manual",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "Instrumentação Automática vs. Manual",
+    "anchor": "instrumentacao-automatica-vs-manual",
+    "text": "A auto instrumentação cobre o que é genérico e repetitivo: toda requisição HTTP recebida, toda chamada de saída, toda query ao banco. O span manual é para o que só o domínio de negócio sabe que importa. Pacotes de instrumentação ( AspNetCore , Http , EntityFrameworkCore ) se conectam aos hooks já existentes do framework — middleware, DiagnosticSource , interceptors do EF — e geram spans/métricas sem tocar no código de negócio. Criada explicitamente com ActivitySource.StartActivity(...) em volta de uma operação que importa para o negócio: \"debitar cartão\", \"calcular frete\", \"reservar estoque\". Enriquece o trace com contexto que a auto instrumentação não enxerga. Setup — Automática + Fontes Manuais csharp var activitySource = new ActivitySource(\"PedidosApi.Cobranca\"); builder.Services.AddOpenTelemetry() .ConfigureResource(r = r.AddService( serviceName: \"pedidos api\", serviceVersion: \"1.4.0\")) .WithTracing(tracing = tracing .AddSource(activitySource.Name) // spans manuais deste servico .AddAspNetCoreInstrumentation() // auto: requests HTTP recebidos .AddHttpClientInstrumentation() // auto: chamadas HTTP de saida .AddEntityFrameworkCoreInstrumentation() // auto: queries via EF Core .AddOtlpExporter(o = o.Endpoint = new Uri(\"http://otel collector:4317\"))) .WithMetrics(metrics = metrics .AddAspNetCoreInstrumentation() .AddRuntimeInstrumentation() // GC, thread pool, memoria do runtime .AddOtlpExporter(o = o.Endpoint = new Uri(\"http://otel collector:4317\"))); Criando um Span Manual csharp // Span manual em torno de uma operacao critica de negocio using var activity = activitySource.StartActivity( \"cobranca.debitar cartao\", ActivityKind.Internal); activity?.SetTag(\"pedido.id\", pedido.Id); activity?.SetTag(\"pagamento.valor\", pedido.Valor); try { await gatewayPagamento.DebitarAsync(pedido); activity?.SetStatus(ActivityStatusCode.Ok); } catch (Exception ex) { activity?.SetStatus(ActivityStatusCode.Error, ex.Message); activity?.AddEvent(new ActivityEvent(\"pagamento.falhou\")); throw; } Existe um terceiro nível: zero code. Além da instrumentação automática \"via pacote + algumas linhas em Program.cs \", há agentes de auto attach ( OpenTelemetry.AutoInstrumentation no .NET, o Java agent .jar ) que instrumentam o processo sem alterar o código fonte — só variáveis de ambiente e um wrapper de inicialização. Útil para instrumentar rápido serviços legados ou de terceiros.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#propagacao-de-contexto-semantic-conventions",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "Propagação de Contexto & Semantic Conventions",
+    "anchor": "propagacao-de-contexto-semantic-conventions",
+    "text": "Propagação — traceparent, tracestate e Baggage Um trace só existe porque o contexto (trace id, span id do pai, flags de sampling) viaja junto com a requisição entre serviços. Em HTTP/gRPC, a instrumentação automática injeta e extrai esse contexto sozinha via o header padrão do W3C Trace Context : traceparent . text traceparent: 00 4bf92f3577b34da6a3ce929d0e0e4736 00f067aa0ba902b7 01 00 version (fixo, sempre \"00\") 4bf92f3577b34da6a3ce929d0e0e4736 trace id: 32 hex (128 bits), igual em toda a jornada 00f067aa0ba902b7 parent id: 16 hex (64 bits), span do chamador 01 trace flags: 01 = sampled, 00 = not sampled Um segundo header, tracestate , carrega informação específica de vendor sem interferir no traceparent . Já o Baggage propaga pares chave valor de negócio — tenant id , user tier — por toda a cadeia de chamadas; diferente do trace context, esses dados seguem para toda operação subsequente, não só para telemetria, então cuidado com tamanho e com dados sensíveis. Mensageria não propaga sozinha. Diferente de HTTP/gRPC, filas (Kafka, RabbitMQ, SQS) não têm um middleware universal injetando traceparent . É responsabilidade da aplicação extrair o contexto do span atual e escrever nos headers/atributos da mensagem no producer, e extrair de volta no consumer antes de iniciar seu próprio span — senão cada mensagem processada vira um trace novo, desconectado da origem. Semantic Conventions — Nomes Padronizados Semantic conventions são os nomes de atributo padronizados pela especificação. Sem elas, cada time inventa sua própria variação ( path vs route vs url ) e a telemetria fica incomparável entre serviços e entre linguagens: http.request.method \", \"GET\"], [\"HTTP\", \" http.response.status code \", \"200\"], [\"HTTP\", \" http.route \", \"/pedidos/{id}\"], [\"Rede\", \" server.address / server.port \", \"pedidos api.internal / 443\"], [\"Banco de dados\", \" db.system.name \", \"postgresql\"], [\"Recurso\", \" service.name \", \"pedidos api\"], [\"Recurso\", \" deployment.environment \", \"production\"], ]} /",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#opentelemetry-collector",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "OpenTelemetry Collector",
+    "anchor": "opentelemetry-collector",
+    "text": "Por Que Usar um Collector Exportar direto da aplicação para o backend funciona, mas empurra para dentro do processo da app responsabilidades que não são dela: A app só precisa falar OTLP com o Collector. Trocar Jaeger por Tempo, ou adicionar Datadog em paralelo, é mudar um arquivo YAML de infraestrutura — zero redeploy de código. Agrupa spans/métricas antes de enviar, reduzindo o número de conexões ao backend. Segura uma fila em memória/disco se o backend cair, sem bloquear a aplicação. Tail based sampling (decidir depois de ver o trace inteiro — \"mantenha se deu erro ou foi lento\") só é possível num ponto central que enxerga todos os spans de todos os serviços. Sampling feito só no SDK enxerga apenas o próprio serviço. Adiciona/remove atributos, mascara PII antes de sair da rede interna, filtra ruído (health checks, /metrics ). Feito uma vez no Collector, não em N aplicações. Anatomia de um Pipeline (Receivers → Processors → Exporters) Um pipeline do Collector é sempre a mesma receita: receivers (como os dados entram), processors (o que acontece com eles no meio do caminho) e exporters (para onde saem) — amarrados em service.pipelines , um por sinal: yaml receivers: otlp: protocols: grpc: endpoint: 0.0.0.0:4317 http: endpoint: 0.0.0.0:4318 processors: memory limiter: check interval: 1s limit mib: 512 batch: send batch size: 1000 timeout: 10s tail sampling: decision wait: 10s policies: name: mantem erros type: status code status code: status codes: [ERROR] name: mantem lentos type: latency latency: threshold ms: 500 name: amostra o resto type: probabilistic probabilistic: sampling percentage: 10 exporters: otlp/jaeger: endpoint: jaeger collector:4317 tls: insecure: true prometheus: endpoint: 0.0.0.0:9464 otlphttp/loki: endpoint: http://loki:3100/otlp datadog: api: key: ${env:DD API KEY} service: pipelines: traces: receivers: [otlp] processors: [memory limiter, tail sampling, batch] exporters: [otlp/jaeger, datadog] metrics: receivers: [otlp] processors: [memory limiter, batch] exporters: [prometheus, datadog] logs: receivers: [otlp] processors: [memory limiter, batch] exporters: [otlphttp/loki, datadog] Ordem dos processors importa. memory limiter sempre primeiro (protege o processo de OOM), sampling no meio, batch sempre por último — ele deve rodar depois de qualquer processor que descarta dados (como o tail sampling ), senão você agrupa dados que vai jogar fora em seguida.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#sinais-maturidade-de-traces-metricas-e-logs",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "Sinais — Maturidade de Traces, Métricas e Logs",
+    "anchor": "sinais-maturidade-de-traces-metricas-e-logs",
+    "text": "A especificação modela os três sinais com APIs distintas — e maturidade bem diferente entre eles, dependendo da linguagem: Traces \", \" Tracer → Span (pai/filho)\", \" Stable — quase todas as linguagens\", \"Sinal fundador do projeto (fusão OpenTracing + OpenCensus). O mais maduro e mais usado em produção\"], [\" Métricas \", \" Meter → Counter / UpDownCounter / Histogram / Gauge\", \" Stable — maioria das linguagens\", \"Cobre os mesmos tipos numéricos do modelo Prometheus\"], [\" Logs \", \" Logger → LogRecord , correlacionado a trace id/span id\", \" Varia por linguagem \", \".NET, Java, C++, PHP: Stable. Go, Rust: Beta. JavaScript, Python: ainda em Development\"], ]} / Antes de adotar OTel para logs numa stack específica, confira a matriz oficial de status por linguagem — \"Stable\" no .NET não significa \"Stable\" em toda linguagem. Traces e métricas são aposta segura em qualquer linguagem madura do projeto; logs merecem uma checagem antes.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "opentelemetry#boas-praticas-pegadinhas",
+    "slug": "opentelemetry",
+    "title": "OpenTelemetry",
+    "category": "infra",
+    "section": "Boas Práticas & Pegadinhas",
+    "anchor": "boas-praticas-pegadinhas",
+    "text": "Instrumente desde o dia 1. Fazer retrofit de OTel num sistema que já está em produção há anos é a pior hora — cada serviço precisa de deploy sob pressão, exatamente quando mais se precisa de visibilidade. Ligar a instrumentação automática custa poucas linhas; adiar custa uma madrugada de incidente às cegas. Use o Collector, sempre. Apontar o exporter OTLP direto para o backend a partir da aplicação parece mais simples no dia 1, mas acopla a app ao backend e joga fora batching, retry e sampling centralizados. Trate o Collector como peça de infraestrutura obrigatória, não como um \"nice to have\". Cardinalidade e custo de sampling. Atributo de alta cardinalidade ( user id , order id ) numa métrica multiplica o número de séries temporais e explode custo/memória do backend — mantenha esses valores em spans e logs, nunca como label de métrica. Em traces, capturar 100% do tráfego em produção de alto volume é caro; use sampling probabilístico no SDK ou tail based no Collector, sempre preservando 100% dos erros e das requisições mais lentas. Todo serviço deve emitir service.name , service.version e deployment.environment do mesmo jeito. Sem isso, dashboards e correlação entre serviços quebram silenciosamente. Pacotes de instrumentação e o SDK core evoluem juntos. Atualizar só um deles (por exemplo, só o exporter) é a causa mais comum de erro silencioso de build ou de telemetria que some sem exceção nenhuma.",
+    "tags": [
+      "OpenTelemetry",
+      "OTLP",
+      "Collector",
+      "Instrumentação"
+    ]
+  },
+  {
+    "id": "apm-saas#_",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#o-que-e-apm-saas",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "O que é APM SaaS",
+    "anchor": "o-que-e-apm-saas",
+    "text": "\"APM\" nasceu como sigla de Application Performance Monitoring — instrumentar uma aplicação pra medir transações, tempo de resposta e erros. Mas \"APM SaaS\" hoje descreve algo bem maior: uma plataforma única, gerenciada pelo vendor , que empacota os 3 pilares da observabilidade (logs, métricas, traces) e ainda soma RUM (Real User Monitoring), synthetics (robôs simulando usuários), alertas e dashboards — tudo entregue por um agente que se auto instrumenta , sem você operar storage, retenção ou pipeline de ingestão. Traces de aplicação: transações, latência por endpoint, erros e dependências entre serviços. CPU, memória, disco, rede — do host físico ao container — coletados pelo mesmo agente. Ingestão, indexação e busca full text, já correlacionada ao trace e ao host de origem. Telemetria do navegador/app mobile do usuário real: page load, Core Web Vitals, crashes. Testes automáticos 24/7 de fora pra dentro, detectando queda antes do cliente reclamar. Regras, IA de anomalia e painéis prontos — o produto final que o time de plantão realmente olha. Diferença pra pilha OSS. Na pilha open source (Prometheus + Loki + Tempo/Jaeger, coladas por OpenTelemetry) você monta e opera cada peça. No APM SaaS, um único agente (Datadog Agent, New Relic Agent, OneAgent ) já nasce falando com o backend do próprio vendor — você troca operação por fatura mensal .",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#como-funciona",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "Como Funciona",
+    "anchor": "como-funciona",
+    "text": "Na pilha OSS você mesmo cola Prometheus + Loki + Tempo com um Collector do OpenTelemetry. No APM SaaS o \"cano\" já vem soldado: o agente do vendor fala nativamente com o backend dele. Dá pra trocar o agente proprietário por instrumentação OpenTelemetry pura exportando via OTLP direto pro ingest do SaaS — os três vendors aceitam OTLP — mas dashboards, alertas e a linguagem de consulta (NRQL, DQL, ou a sintaxe própria do Datadog) continuam presos ao vendor.",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#datadog",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "Datadog",
+    "anchor": "datadog",
+    "text": "O maior catálogo de integrações do mercado — mais de 900 no Datadog Marketplace, cobrindo desde AWS/Azure/GCP até bancos de dados, filas e frameworks. Isso faz do Datadog o produto mais forte em correlação infra + APM : qualquer métrica de host, container ou serviço gerenciado já chega taggeada e pronta pra cruzar com um trace. A peça central é o Unified Service Tagging — três tags reservadas ( env , service , version ) aplicadas a métricas, traces, logs e profiles do mesmo serviço. Definindo essas três tags (via variáveis de ambiente do agente ou atributos OpenTelemetry) todo o resto se correlaciona sozinho: yaml variaveis de ambiente no pod/container ativa Unified Service Tagging env: name: DD ENV value: \"producao\" name: DD SERVICE value: \"pedidos api\" name: DD VERSION value: \"1.4.2\" alternativa via padrao OpenTelemetry (o Datadog remapeia automaticamente): name: OTEL RESOURCE ATTRIBUTES value: \"service.name=pedidos api,deployment.environment.name=producao\" Watchdog é o motor de detecção de anomalias do Datadog: aprende a baseline normal de cada métrica/serviço e alerta sozinho quando o padrão foge do histórico, sem você escrever threshold manual. Preço é à la carte por módulo : infraestrutura por host/mês, APM por host/mês, logs por GB ingerido e por evento indexado (cobranças separadas — logar sem indexar é bem mais barato), RUM por sessão, Synthetics por teste. Granularidade dá controle fino, mas exige monitorar o próprio consumo pra não ser surpreendido na fatura.",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#new-relic",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "New Relic",
+    "anchor": "new-relic",
+    "text": "Fundada em 2008, foi a empresa que criou a categoria \"APM em SaaS\" — antes disso, medir performance de aplicação exigia ferramentas on premise. Sua marca registrada sempre foi o tracing profundo por linha de código : hotspot exato de tempo dentro de um método, não só \"qual endpoint está lento\". Tecnicamente, tudo (métricas, eventos, logs, traces) é gravado numa única base de eventos, o NRDB , consultável por NRQL (linguagem parecida com SQL). Dashboards, alertas e análises ad hoc usam a mesma linguagem de consulta pra qualquer tipo de dado: text NRQL estimar custo mensal de ingestao de dados no plano atual FROM NrMTDConsumption SELECT latest(GigabytesIngestedBillable) 0.40 O preço soma dois eixos independentes : Cobrança por GB/mês, com faixa gratuita inicial (referência pública: 100 GB/mês grátis ). Acima disso, o preço por GB varia pela camada — Data (retenção padrão, ~8 dias) ou Data Plus (retenção estendida, ~90 dias, mais cara por GB). Cobrança por pessoa, em categorias de acesso — de leitura básica gratuita até acesso completo ( Full Platform ). Times grandes sentem esse eixo tanto quanto o volume de dado.",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#dynatrace",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "Dynatrace",
+    "anchor": "dynatrace",
+    "text": "O agente é só um: o OneAgent . Um único binário instalado por host (VM, nó do Kubernetes via Operator/Helm, ou injetado por webhook em cada pod) que se auto descobre — encontra sozinho todos os processos, serviços, containers e dependências rodando ali e monta isso em tempo real num mapa de topologia ( Smartscape ), sem editar código nem declarar manualmente cada serviço. bash instala o OneAgent num host Linux (token e URL vem do seu ambiente Dynatrace) wget O Dynatrace OneAgent.sh \\ \"https://{seu ambiente}.live.dynatrace.com/api/v1/deployment/installer/agent/unix/default/latest?arch=x86&flavor=default\" sudo /bin/sh Dynatrace OneAgent.sh set app log content access=true Por trás da automação está a Davis AI — motor baseado em causalidade (não só estatística) que cruza continuamente eventos, métricas, logs e a topologia da Smartscape pra rodar uma análise de árvore de falhas e apontar a causa raiz exata , não só o sintoma. Isso vira um único \"Problem\" já com o blast radius mapeado, em vez de dezenas de alertas soltos pro mesmo incidente. Determinístico ≠ estatístico. Watchdog (Datadog) e Applied Intelligence (New Relic) aprendem baseline e detectam desvio estatístico. Davis AI soma a isso um modelo de causalidade sobre a topologia real de dependências — por isso o Dynatrace se vende como o mais forte em apontar causa raiz automática, não só anomalia. Historicamente mais forte em enterprise e setores regulados (bancos, telcos, seguradoras): suporte a ambientes híbridos muito grandes e heterogêneos, e a opção Dynatrace Managed — a mesma plataforma rodando dentro do datacenter do cliente, pra quem tem exigência de residência de dado que um SaaS público não atende.",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#comparacao",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "Comparação",
+    "anchor": "comparacao",
+    "text": "Os três resolvem o mesmo problema por ângulos diferentes — a escolha certa depende do que pesa mais pro seu time: amplitude, profundidade histórica ou automação. Amplitude — 900+ integrações, infra + APM + logs + rede + segurança num catálogo só\", \" Tracing profundo — pioneiro em APM por linha de código, tudo numa única base (NRDB/NRQL)\", \" Automação enterprise — auto descoberta total e causalidade, foco em ambientes híbridos grandes\"], [\"IA / causa raiz\", \" Watchdog — detecção estatística de anomalia\", \" Applied Intelligence — correlação e ranking de alertas\", \" Davis AI — causal, aponta a causa raiz via árvore de falhas\"], [\"Modelo de preço\", \"À la carte por módulo: host/mês (infra + APM) + GB de log indexado + RUM/Synthetics avulsos\", \"Consumo: GB ingerido/mês (com faixa gratuita) + assento de usuário por tipo de acesso\", \"Consumo (DDU — Davis Data Units) ou por host, conforme o contrato (Dynatrace Platform Subscription)\"], [\"Instrumentação\", \" Datadog Agent + libs dd trace por linguagem, ou OpenTelemetry via DDOT Collector\", \"Agente de APM por linguagem, ou exportação compatível com OpenTelemetry\", \" OneAgent único, injeção automática (bytecode/eBPF) sem tocar no código\"], ]} /",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#saas-vs-oss-self-hosted-prometheus-grafana-otel",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "SaaS vs OSS Self-Hosted (Prometheus/Grafana/OTel)",
+    "anchor": "saas-vs-oss-self-hosted-prometheus-grafana-otel",
+    "text": "Trocar OSS por SaaS é trocar quem opera — não elimina o trade off, move ele. SaaS: opex previsível por assinatura, mas escala com volume (hosts, GB de log, spans) — pode disparar com o crescimento. OSS: infraestrutura mais barata, mas o custo vira horas de engenharia operando storage e retenção. SaaS: o vendor cuida de HA, upgrade e escala do backend — zero ops pro seu time. OSS: você opera HA do Prometheus/Loki/Tempo, faz sharding, backup e migração de versão. SaaS: dashboards, alertas e a linguagem de consulta (NRQL, DQL, sintaxe própria) vivem no formato do vendor. OSS + OpenTelemetry: instrumentação neutra, o backend é um detalhe trocável. SaaS: correlação e dashboards prontos em minutos após instalar o agente. OSS: você monta os painéis, os alertas e a correlação (ex.: casar trace id com log) manualmente. Não é tudo ou nada. Um caminho comum: instrumentar com OpenTelemetry desde o início e decidir o backend depois — ou até rodar os dois em paralelo (ex.: Prometheus interno pra métricas de infra baratas, SaaS só pra APM/RUM, onde a correlação automática paga o preço).",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "apm-saas#boas-praticas-e-pegadinhas",
+    "slug": "apm-saas",
+    "title": "APM SaaS — Datadog, New Relic, Dynatrace",
+    "category": "infra",
+    "section": "Boas Práticas e Pegadinhas",
+    "anchor": "boas-praticas-e-pegadinhas",
+    "text": "Custo escala com volume, não com valor. Cada host novo num Auto Scaling Group, cada span sem sampling, cada log deixado em nível DEBUG em produção multiplica a fatura — sem necessariamente multiplicar o benefício. Configure alertas de consumo desde o primeiro mês e filtre o que é indexado antes de mandar tudo pro SaaS. Instrumente com OpenTelemetry, não com o SDK proprietário. Os três vendors aceitam OTLP nativamente. Instrumentar a aplicação com o SDK/Collector do OTel em vez do agente proprietário mantém o código portável — trocar de Datadog pra Dynatrace vira uma troca de exportador, não uma reescrita de instrumentação (dashboards e alertas ainda precisam ser refeitos, mas o ponto mais caro — o código instrumentado — fica protegido). PII em log vira PII no vendor. Em SaaS o log sai da sua infraestrutura e passa a viver na nuvem de terceiros, sujeito à retenção e à política de compliance dele. Senha, token, cartão, CPF — nunca capture. Use as ferramentas de mascaramento na entrada (Sensitive Data Scanner no Datadog, obfuscation rules no New Relic, log masking no Dynatrace) antes do dado ser indexado, não depois. Padronize env / service / version (ou o equivalente OTel) antes de escalar — corrigir tag depois de tudo instrumentado é retrabalho em cada serviço. Separe dev/stage/prod com tags e workspaces dentro da mesma conta. Conta nova por ambiente multiplica licença e perde a correlação entre eles. Instale e configure o agente via Terraform/Helm/Operator. Onboarding manual de host é o motivo nº 1 de \"serviço sem monitoramento\" em produção. Todo vendor grande tem um dashboard interno de uso (GB ingerido, hosts, custom metrics). Revise mensalmente — é o jeito de pegar o pico de custo antes da fatura.",
+    "tags": [
+      "Datadog",
+      "New Relic",
+      "Dynatrace",
+      "APM"
+    ]
+  },
+  {
+    "id": "sentry#_",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Sentry",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#o-que-e-o-sentry",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "O que é o Sentry",
+    "anchor": "o-que-e-o-sentry",
+    "text": "Sentry é uma plataforma de error tracking com performance monitoring embutido: o foco central é capturar exceções que acontecem em produção — com stack trace completo, contexto de execução e agrupamento automático — direto do código da aplicação via SDK, sem precisar operar um Collector ou pipeline de telemetria separado. Diferente dos três pilares clássicos de observabilidade (logs, métricas, traces), o Sentry parte de um evento : algo quebrou, ou uma transação ficou lenta, e o SDK reporta esse evento já com tudo que é necessário pra investigar sem precisar reproduzir o problema localmente depois. Captura exceções (tratadas ou não), agrupa em issues, mostra stack trace, contexto e frequência. Rastreia transactions e spans — tempo de resposta de rotas, queries, chamadas externas. Grava a sessão do usuário no frontend (DOM, cliques, network) pra reproduzir visualmente o erro. Error tracking ≠ observabilidade completa. O Sentry responde muito bem \"o que quebrou, onde, pra quem e desde quando\" — mas não substitui métricas de infraestrutura (CPU, memória, disco) nem logs de auditoria de alto volume. Times maduros usam Sentry pra erros e frontend, e complementam com Prometheus/Grafana, ELK ou um APM completo pra visão de infra e SLOs (comparação na seção final).",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#fluxo-de-um-erro",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Fluxo de um Erro",
+    "anchor": "fluxo-de-um-erro",
+    "text": "Do momento em que uma exceção acontece até alguém ser avisado, o evento passa por algumas etapas: O SDK roda dentro do processo da aplicação: intercepta exceções não tratadas via handler global da linguagem/framework, e também aceita captura manual em qualquer bloco try/catch . Antes de enviar, anexa tudo que o Scope atual já acumulou. O evento viaja até o ingest (o componente interno costuma ser chamado de Relay), que valida o payload e aplica regras de scrubbing definidas no servidor antes de persistir. Daqui em diante entra o agrupamento, que decide se isso é uma issue nova ou mais uma ocorrência de uma issue já conhecida.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#agrupamento-grouping-e-deduplicacao",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Agrupamento (Grouping) e Deduplicação",
+    "anchor": "agrupamento-grouping-e-deduplicacao",
+    "text": "Se 10 mil requisições batem no mesmo bug em produção, você não quer 10 mil issues — quer uma issue com 10 mil eventos, uma contagem e uma tendência (subindo, estável, caindo). É isso que o agrupamento faz. Por padrão, o Sentry calcula um fingerprint a partir do tipo da exceção, da mensagem normalizada e dos frames mais relevantes do stack trace — priorizando código da própria aplicação sobre frames de bibliotecas de terceiros. Eventos com o mesmo fingerprint viram ocorrências da mesma issue; eventos com fingerprint diferente abrem uma issue nova. Quando o agrupamento padrão erra o alvo (por exemplo, um mesmo stack trace genérico escondendo causas de negócio diferentes), dá pra customizar via SetBeforeSend : csharp public class PedidoRpcException : Exception { public string Function { get; set; } // nome da chamada RPC (ex.: \"DebitarEstoque\") public string ErrorCode { get; set; } // codigo retornado pelo servico remoto } // dentro de UseSentry(o = ...) na inicializacao do SDK o.SetBeforeSend(@event = { if (@event.Exception is PedidoRpcException ex) { @event.SetFingerprint(new[] { \"{{ default }}\", // mantem o agrupamento padrao como base ex.Function, ex.ErrorCode, }); } return @event; }); Prefixar com {{ default }} mantém o comportamento padrão e só adiciona granularidade — sem o prefixo, você sobrescreve o agrupamento inteiro (útil pra forçar vários stacks diferentes numa única issue \"conhecida\"). Uma issue marcada como resolvida que volta a acontecer numa release nova é chamada de regressão — o Sentry reabre a issue automaticamente e a trata como um sinal mais grave que um erro novo genérico (mais sobre isso na seção de boas práticas).",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#contexto-rico",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Contexto Rico",
+    "anchor": "contexto-rico",
+    "text": "Uma issue sem contexto é só um stack trace — útil, mas limitado. O SDK enriquece cada evento automaticamente com várias camadas de contexto: Trilha de eventos antes do erro — cliques, chamadas HTTP, queries, logs. Reconstrói \"o que aconteceu antes\" sem precisar de session replay. Pares chave/valor indexados e pesquisáveis ( environment , release , server name , tags customizadas). Filtra e agrupa issues por qualquer tag. Quem foi afetado — id, email, IP (opcional). Responde \"quantos clientes únicos bateram nesse bug\" e permite abrir só os erros de um cliente específico. Separa production , staging , development no mesmo projeto. Sem isso, ruído de dev polui o mesmo feed de erros de produção. Registrar um breadcrumb manual é direto: csharp SentrySdk.AddBreadcrumb( message: \"Usuario autenticado: \" + user.Email, category: \"auth\", level: BreadcrumbLevel.Info);",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#releases-e-source-maps",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Releases e Source Maps",
+    "anchor": "releases-e-source-maps",
+    "text": "Uma release é um identificador único de versão (a tag do build, o SHA do commit, ou um semver) enviado junto de cada evento. É o que permite responder duas perguntas centrais depois de um deploy: Esse erro é novo nessa versão, ou já existia antes? Uma issue que estava resolvida voltou a acontecer numa release nova? (Isso é a regressão mencionada acima.) Releases também habilitam suspect commits : o Sentry cruza o intervalo de commits entre duas releases com os arquivos que aparecem no stack trace pra sugerir qual commit provavelmente introduziu o bug. Pra aplicações JavaScript/TypeScript , o stack trace em produção normalmente aponta pra código minificado e empacotado — algo como t.a(e,n) em vez do nome de função e da linha originais. Source maps resolvem isso: são arquivos gerados no build que mapeiam o código transformado de volta ao código fonte. Quando o source map da release é enviado ao Sentry, o stack trace exibido na issue já vem des minificado, com arquivo, função e linha reais: typescript // next.config.ts associa o build a uma release e sobe os source maps automaticamente export default withSentryConfig(nextConfig, { org: \"mendez tech\", project: \"loja frontend\", authToken: process.env.SENTRY AUTH TOKEN, // token de build, nunca exposto no client release: { name: process.env.GIT SHA }, }); Gere os source maps no build, mas não os sirva publicamente junto ao bundle — suba direto pro Sentry (hidden source maps). Um .map público na mesma pasta do .js vaza o código fonte original pra qualquer um que abra o DevTools.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#performance-e-tracing",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Performance e Tracing",
+    "anchor": "performance-e-tracing",
+    "text": "Além de erros, o SDK instrumenta performance: cada requisição vira uma transaction , dividida em spans (uma query, uma chamada HTTP externa, um render) — a mesma ideia de trace/span dos três pilares clássicos, já com UI de agregação (p50/p95/p99 por rota) pronta dentro do produto. Unidade de nível superior — uma requisição HTTP, um job, um page load. Tem duração total e um nome (normalmente a rota). Sub operações dentro de uma transaction, em árvore. Mostra onde o tempo foi gasto: query lenta, chamada externa, serialização. No frontend, captura métricas de UX real do usuário — LCP, CLS, INP — sem instrumentação manual. Grava DOM, cliques e requests do navegador numa sessão real, sincronizado com o erro. Reproduz visualmente o que o usuário via no momento do crash. Capturar 100% das transactions em produção de alto tráfego sai caro e raramente é necessário — o volume é controlado pelo TracesSampleRate (ex.: 0.2 = 20% das transactions viram amostra). É o mesmo trade off de sampling de traces do OpenTelemetry.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#sdk-inicializacao-e-captura-manual",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "SDK: Inicialização e Captura Manual",
+    "anchor": "sdk-inicializacao-e-captura-manual",
+    "text": "Inicialização típica em uma app ASP.NET Core, conectando ao projeto no Sentry: csharp // Program.cs inicializacao do SDK var builder = WebApplication.CreateBuilder(args); builder.WebHost.UseSentry(o = { o.Dsn = \"https:// @o .ingest.sentry.io/ \"; o.Environment = builder.Environment.EnvironmentName; o.Release = \"pedidos api@2026.07.22+a1b2c3d\"; // versionado pelo CI o.TracesSampleRate = 0.2; // 20% das transactions o.SendDefaultPii = false; // nao envia IP/headers por padrao }); var app = builder.Build(); app.UseSentryTracing(); // habilita spans automaticos por rota app.Run(); Captura manual, pra exceções que a aplicação já trata mas que ainda merecem visibilidade: csharp try { await estoqueClient.DebitarAsync(pedido.Id, pedido.Itens); } catch (Exception ex) { SentrySdk.ConfigureScope(scope = { scope.SetTag(\"order id\", pedido.Id); scope.User = new User { Id = pedido.ClienteId }; }); SentrySdk.CaptureException(ex); throw; // o Sentry so observa quem decide o fluxo de erro continua sendo o app } Automático cobre o principal. Exceções não tratadas (que gerariam um 500 sem nenhum registro) já são capturadas sem código extra, só com UseSentry no startup. Reserve CaptureException manual pra exceções que você já trata com um catch que segue o fluxo normal — sem a chamada manual, elas nunca chegam ao Sentry.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#sentry-vs-observabilidade-completa",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Sentry vs Observabilidade Completa",
+    "anchor": "sentry-vs-observabilidade-completa",
+    "text": "Sentry não compete com um APM completo (Datadog, New Relic) ou uma stack OpenTelemetry — eles resolvem problemas diferentes e, na prática, convivem no mesmo time: Erros e exceções: stack trace, agrupamento em issues, contexto de código\", \"Observabilidade ampla: logs + métricas + traces + infraestrutura\"], [\"Frontend / JS\", \"Muito forte: session replay, source maps, Web Vitals nativos\", \"Cobre, mas historicamente com DX de frontend mais fraca\"], [\"Setup inicial\", \"SDK leve, minutos até o primeiro erro capturado\", \"Collector, pipelines e dashboards — mais peça de infra pra manter\"], [\"Instrumentação\", \"Automática por SDK de linguagem + captura manual pontual\", \"OpenTelemetry vendor neutral, ou agent proprietário\"], [\"Alertas típicos\", \"Centrados em issue de código: nova, regressão, taxa de erro\", \"Centrados em SLO/infra: CPU, latência de serviço, saturação\"], [\"Modelo de custo\", \"Por evento/erro (volume de issues)\", \"Por host, métrica ou GB ingerido — escala rápido com infra\"], [\"Quando usar junto\", \"Debugar o erro exato: stack, contexto, usuário afetado\", \"Correlacionar com infra, SLOs e outros serviços na mesma incidência\"], ]} / Um padrão comum: Sentry cobre erros e frontend; Prometheus/Grafana ou um APM cobrem infraestrutura e SLOs. O trace id do OpenTelemetry pode inclusive ser propagado como tag no evento do Sentry, permitindo pular de uma issue de erro direto pro trace distribuído que a originou.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
+    ]
+  },
+  {
+    "id": "sentry#boas-praticas-e-pegadinhas",
+    "slug": "sentry",
+    "title": "Sentry",
+    "category": "infra",
+    "section": "Boas Práticas e Pegadinhas",
+    "anchor": "boas-praticas-e-pegadinhas",
+    "text": "Nunca envie PII sem querer. Por padrão SendDefaultPii vem desligado, mas breadcrumbs de HTTP, corpo de requisição e mensagens de log podem carregar senha, token, cartão ou CPF sem você perceber. Use SetBeforeSend (ou o data scrubber do servidor, em Project Settings) pra redigir campos sensíveis antes do evento sair da sua rede — trate o Sentry com a mesma cautela que um agregador de log. TracesSampleRate em 1.0 parece bom em dev, mas em produção de alto tráfego estoura custo e quota rápido. Comece baixo ( 0.1 – 0.2 ) e suba só se precisar de mais cobertura pra investigar um caso específico. Uma issue resolvida que volta numa release nova é um sinal mais grave que um erro genérico — geralmente indica que o fix não pegou ou foi revertido. Configure uma regra de alerta separada pra regressão. Agrupar demais esconde variantes importantes do mesmo bug; agrupar de menos enche o projeto de issues duplicadas. Ajuste fingerprint só quando o agrupamento padrão (stack trace) claramente erra o alvo. Erro de bot, extensão de navegador ou rede do cliente (ex.: ChunkLoadError ) é ruído clássico. Use inbound filters/ignore rules pra não gastar quota — e atenção do time — com eventos que ninguém vai agir.",
+    "tags": [
+      "Sentry",
+      "Error Tracking",
+      "APM",
+      "Releases"
     ]
   }
 ]

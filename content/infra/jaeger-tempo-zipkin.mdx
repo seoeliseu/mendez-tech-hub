@@ -1,0 +1,276 @@
+---
+title: "Jaeger, Tempo & Zipkin"
+slug: jaeger-tempo-zipkin
+category: infra
+icon: "🧵"
+accent: "#60a5fa"
+description: "Backends de tracing distribuído: modelo de spans/traces, sampling e ingestão OTLP — Jaeger (CNCF), Grafana Tempo e Zipkin."
+tags: [Jaeger, Tempo, Zipkin, Tracing]
+order: 12
+updated: 2026-07-22
+---
+
+## Modelo de Trace e Span
+
+Um **trace** representa a jornada completa de uma requisição por vários serviços. Ele é formado por **spans** — cada span é uma unidade de trabalho com início e fim (uma chamada HTTP, uma query, uma etapa de processamento). Ligados em árvore por relação **parent/child**, os spans reconstroem exatamente por onde a requisição passou e quanto tempo cada etapa levou.
+
+Dois identificadores amarram tudo isso:
+
+- **`trace_id`** — 16 bytes (32 caracteres hex), compartilhado por **todo** span do trace. É a chave que o backend usa pra agrupar tudo de volta numa árvore só.
+- **`span_id`** — 8 bytes (16 caracteres hex), único por span. Todo span (exceto o raiz) carrega também um `parentSpanId`, apontando pro span que o originou — é essa referência que transforma uma lista solta de spans numa árvore.
+
+Além do básico, cada span carrega **atributos** (pares chave-valor como `http.method`, `db.statement`, `order_id` — o mesmo cuidado com cardinalidade do módulo de Observabilidade se aplica aqui), **events** (anotações com timestamp dentro do próprio span, tipo um log embutido) e **links** — referências a spans de *outros* traces. O caso clássico de link: um consumidor de fila processa um lote que mistura mensagens de vários traces diferentes; o span do lote não pode ter vários pais ao mesmo tempo, então ele **linka** de volta pra cada trace de origem em vez de virar filho de todos.
+
+Todo span também tem um **kind**, que descreve seu papel na comunicação:
+
+<CardGrid cols={3}>
+  <Card accent="#38bdf8" title="SERVER / CLIENT">
+    Lado que recebe (<code>SERVER</code>) e lado que chama (<code>CLIENT</code>) numa comunicação síncrona — ex.: a API que atende e o HTTP client que fez a chamada.
+  </Card>
+  <Card accent="#a78bfa" title="INTERNAL">
+    Trabalho interno ao serviço, sem cruzar rede — ex.: uma etapa de cálculo ou validação dentro do mesmo processo.
+  </Card>
+  <Card accent="#fb923c" title="PRODUCER / CONSUMER">
+    Mensageria assíncrona: quem publica (<code>PRODUCER</code>) e quem consome (<code>CONSUMER</code>) uma fila ou tópico — ex.: Kafka, RabbitMQ, SQS.
+  </Card>
+</CardGrid>
+
+Pra esse trace fazer sentido **entre** serviços diferentes, o contexto precisa propagar de um processo pro outro. O padrão moderno é o **W3C Trace Context**, no header `traceparent`:
+
+```text
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+```
+
+Da esquerda pra direita: versão (`00`), `trace_id` de 16 bytes, `span_id` do span que originou a chamada (do ponto de vista de quem recebe, é o "parent-id") e `trace-flags` de 8 bits (`01` = sampled). Um header `tracestate` opcional carrega dados extras específicos de vendor — é por ele, inclusive, que sistemas baseados em B3 (Zipkin) interoperam com o mundo W3C sem reescrever a malha inteira, como vamos ver na seção de Zipkin.
+
+Um span serializado (formato próximo ao que trafega via OTLP) se parece com isto:
+
+```json
+{
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "spanId": "00f067aa0ba902b7",
+  "parentSpanId": "a2fb4a1d1a96d312",
+  "name": "POST /pedidos",
+  "kind": "SERVER",
+  "startTimeUnixNano": "1721654591000000000",
+  "endTimeUnixNano": "1721654591095000000",
+  "attributes": {
+    "http.method": "POST",
+    "http.route": "/pedidos",
+    "http.status_code": 200,
+    "peer.service": "estoque-svc"
+  },
+  "status": { "code": "OK" }
+}
+```
+
+<Callout type="info">
+**Por que `startTimeUnixNano` vem como string?** Não é frescura — é a regra de mapeamento JSON do protobuf: campos `int64` viram string no JSON pra não perder precisão (o tipo `number` do JavaScript não representa com segurança inteiros de 64 bits). Todo span que passa por OTLP segue essa convenção.
+</Callout>
+
+## Jaeger
+
+<Pill color="blue">CNCF Graduated</Pill> <Pill color="purple">Uber · 2015</Pill>
+
+Criado na Uber e doado à **Cloud Native Computing Foundation**, o Jaeger é hoje um projeto graduado do CNCF — mesma categoria de maturidade do Kubernetes e do Prometheus. Historicamente, sua arquitetura tem quatro papéis:
+
+<CardGrid cols={2}>
+  <Card accent="#f472b6" pill="Legado" title="Agent">
+    Processo auxiliar (sidecar ou daemonset) que recebia spans via UDP da aplicação e fazia batching antes de mandar pro Collector. Com exportação OTLP direta da app virando padrão, o Agent ficou opcional — muita instalação nova pula direto pro Collector.
+  </Card>
+  <Card accent="#fb923c" title="Collector">
+    Recebe os spans, valida, aplica processamento em lote e grava no storage. Ponto central de ingestão do cluster.
+  </Card>
+  <Card accent="#a78bfa" title="Query">
+    Serviço de API que busca e recupera traces do storage — por <code>trace_id</code>, serviço, operação, intervalo de tempo, tags ou grafo de dependências entre serviços.
+  </Card>
+  <Card accent="#34d399" title="UI">
+    Interface web que consome a API do Query: busca, timeline de spans, comparação entre traces, grafo de dependências.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Jaeger v2 é, literalmente, um OpenTelemetry Collector.** Desde a v2, o Jaeger parou de manter um Collector próprio do zero e passou a **ser** uma distribuição do OTel Collector com um exporter de storage embutido. Na prática: o mesmo pipeline de ingestão aceita `OTLP`, o protocolo nativo Jaeger e o formato Zipkin ao mesmo tempo — o que explica por que instrumentação antiga em Zipkin continua funcionando direto contra um Jaeger moderno.
+</Callout>
+
+O storage é onde a escolha de operação pesa mais:
+
+<CardGrid cols={3}>
+  <Card accent="#66bb6a" title="Cassandra">
+    Colunar, escrita rápida, escala horizontalmente bem. Opção de produção mais comum em fleets grandes.
+  </Card>
+  <Card accent="#fbbf24" title="Elasticsearch">
+    Pode compartilhar o mesmo cluster usado pra logs. Bom pra busca por tags, mais pesado em recursos que o Cassandra.
+  </Card>
+  <Card accent="#818cf8" title="Badger">
+    Key-value embarcado, sem dependência externa. Usado no modo <code>all-in-one</code> — ótimo pra dev e ambientes pequenos, não pra produção em escala.
+  </Card>
+</CardGrid>
+
+Um pipeline mínimo de ingestão OTLP no Jaeger v2:
+
+```yaml
+# jaeger v2 - aceita otlp, protocolo nativo jaeger e zipkin no mesmo pipeline
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp, jaeger, zipkin]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]
+```
+
+## Grafana Tempo
+
+<Pill color="orange">Grafana Labs</Pill> <Pill color="green">Só object storage</Pill>
+
+A proposta do Tempo é radical: **nada de cluster de banco pra tracing**. Ele guarda tudo direto em object storage — S3, GCS ou Azure Blob Storage — sem precisar operar um Cassandra ou Elasticsearch só pra isso. Isso derruba o custo de operação em ordens de magnitude comparado a Jaeger ou Zipkin em escala.
+
+```yaml
+# tempo - armazenamento 100% em object storage, sem cluster de indice separado
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo-traces
+      endpoint: s3.amazonaws.com
+      access_key: ${S3_ACCESS_KEY}
+      secret_key: ${S3_SECRET_KEY}
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+```
+
+O preço dessa economia é um índice **deliberadamente mínimo** — essencialmente um lookup por `trace_id`, em vez de indexar cada atributo de cada span. Por isso o Tempo depende de uma linguagem de consulta estrutural, a **TraceQL** (inspirada em LogQL e PromQL), pra filtrar por atributos, duração e status sem precisar de um índice pesado por trás:
+
+```text
+{ resource.service.name = "pedidos-api" && span.http.status_code >= 500 && duration > 200ms }
+```
+
+Onde o Tempo realmente se diferencia é na **correlação nativa** dentro do Grafana: trace-to-logs pula do span exato pros logs do Loki que compartilham o mesmo `trace_id`, e trace-to-metrics funciona via o `metrics-generator`, que deriva métricas de span (`span-metrics`, `service-graphs`) e faz `remote_write` pro Prometheus — dali nascem os *exemplars* que levam de um pico no gráfico de latência direto pro trace que causou o pico. Nem Jaeger nem Zipkin têm esse fechamento nativo com os outros dois pilares.
+
+## Zipkin
+
+<Pill color="yellow">O pioneiro</Pill> <Pill color="purple">Twitter · 2012</Pill>
+
+O Zipkin nasceu no Twitter em 2012, inspirado no paper do Dapper do Google — é literalmente o avô do tracing distribuído open source, anterior a OpenTracing e a OpenTelemetry. Seu modelo de span é deliberadamente simples: um `timestamp` e uma `duration` únicos (em microssegundos, sem start/end separados), `localEndpoint`/`remoteEndpoint` (serviço + IP + porta) e `tags` como um mapa plano string-para-string — sem atributos tipados, sem events, sem links.
+
+```json
+{
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "id": "00f067aa0ba902b7",
+  "parentId": "a2fb4a1d1a96d312",
+  "kind": "SERVER",
+  "name": "post",
+  "timestamp": 1721654591000000,
+  "duration": 95000,
+  "localEndpoint": { "serviceName": "pedidos-api", "ipv4": "10.0.4.12" },
+  "tags": { "http.path": "/pedidos", "http.status_code": "200" }
+}
+```
+
+O servidor Zipkin é um jar Java 17+ (construído sobre Armeria, com Spring Boot por baixo — mas não deve ser tratado como uma aplicação Spring Boot convencional). Por padrão usa storage em memória; em produção, as opções são Cassandra, Elasticsearch ou MySQL. O coletor HTTP padrão escuta em `POST /api/v2/spans` na porta `9411`, e também aceita ingestão via Kafka, RabbitMQ, ActiveMQ, gRPC ou Pulsar.
+
+A propagação nativa do Zipkin não é o `traceparent` do W3C — é o formato **B3**, seja em headers separados ou num único header compacto:
+
+```text
+X-B3-TraceId: 4bf92f3577b34da6a3ce929d0e0e4736
+X-B3-SpanId: 00f067aa0ba902b7
+X-B3-ParentSpanId: a2fb4a1d1a96d312
+X-B3-Sampled: 1
+```
+
+```text
+b3: 4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-1-a2fb4a1d1a96d312
+```
+
+É por isso que o Zipkin ainda é comum em stacks **legadas e Spring**: versões mais antigas do Spring Cloud Sleuth (antes do Micrometer Tracing) e proxies como Envoy/Istio historicamente usavam B3 como padrão. A boa notícia é que não é preciso reinstrumentar nada pra sair do Zipkin — como Jaeger e Tempo aceitam o formato Zipkin nativamente na ingestão, dá pra apontar essa instrumentação antiga pra um backend moderno sem tocar no código da aplicação.
+
+## Sampling: Head-Based vs Tail-Based
+
+Guardar 100% dos traces em produção não escala — o custo de rede, processamento e armazenamento cresce junto com o tráfego. Sampling decide **quais** traces sobrevivem, e existem duas estratégias opostas:
+
+<CardGrid cols={2}>
+  <Card accent="#38bdf8" title="Head-based">
+    Decisão tomada **no início** do trace, no span raiz — antes de saber como a requisição termina. Normalmente probabilística (ex.: guarda 5% de tudo) e propaga a mesma decisão pra todos os spans filhos via o próprio `traceparent`/B3. Simples e barata de operar.
+  </Card>
+  <Card accent="#fb923c" title="Tail-based">
+    Decisão tomada **depois** que o trace inteiro termina, olhando o resultado real (erro, latência alta, rota específica). Guarda quase 100% do que importa e descarta o resto — mas exige acumular todos os spans do trace no Collector antes de decidir, com roteamento consistente pra garantir que todo span do mesmo trace chegue na mesma instância.
+  </Card>
+</CardGrid>
+
+<Callout type="warn">
+**Sampling baixo e cego esconde exatamente o que você mais precisa investigar.** Com decisão 100% head-based numa taxa fixa (ex.: 1%), a escolha é feita **antes** de saber o desfecho — logo tem a mesma chance de descartar o erro raro de madrugada que descartaria uma chamada saudável qualquer. Em produção, combine uma taxa head-based baixa (custo previsível) com sampling tail-based, ou pelo menos uma regra fixa de "sempre guarda erro e p99" — o que é raro e caro de investigar não pode ser jogado fora por sorteio.
+</Callout>
+
+## Ingestão: do SDK ao Backend
+
+Do código instrumentado até a tela de busca, a telemetria de tracing passa por um caminho padronizado — o mesmo pipeline serve Jaeger, Tempo ou Zipkin como destino final:
+
+<FlowDiagram
+  title="INGESTÃO — DO SDK AO BACKEND DE TRACING"
+  rows={[
+    { box: "App instrumentada (SDK OTel)", color: "#a78bfa", note: "spans gerados no código", tip: "instrumentação automática (ASP.NET, HttpClient, EF Core) + spans manuais nos pontos de negócio" },
+    { box: "Exportador OTLP — gRPC :4317 / HTTP :4318", color: "#38bdf8", indent: 1, note: "protocolo padrão", tip: "OTLP é o formato universal: troca de backend sem tocar no código da aplicação" },
+    { box: "OpenTelemetry Collector", color: "#fb923c", indent: 1, note: "processa e roteia", tip: "faz batch, filtra, aplica sampling (head ou tail) e exporta pra um ou mais backends" },
+    { box: "Backend: Jaeger / Tempo / Zipkin", color: "#34d399", indent: 2, note: "armazena e monta a árvore do trace", tip: "cada backend guarda os spans e reconstrói o trace_id numa árvore parent/child" },
+    { box: "UI de busca (Jaeger UI / Grafana / Zipkin UI)", color: "#818cf8", indent: 2, note: "consulta e visualização", tip: "busca por trace_id, serviço, duração, tags ou TraceQL" },
+  ]}
+  caption="Um trace só existe de fato depois que os spans saem do processo da app e chegam no backend — antes disso é só contexto em memória."
+/>
+
+## Comparação entre Backends
+
+<ComparisonTable
+  head={["Critério", "Jaeger", "Grafana Tempo", "Zipkin"]}
+  rows={[
+    ["Storage", "<code>Cassandra</code> / <code>Elasticsearch</code> / <code>Badger</code> (embarcado)", "<strong style='color:#34d399'>Só object storage</strong> — S3, GCS, Azure Blob", "<code>Cassandra</code> / <code>Elasticsearch</code> / <code>MySQL</code> / in-memory"],
+    ["Custo em escala", "Médio-alto — cluster de Cassandra/ES pra manter", "<strong style='color:#34d399'>Baixo</strong> — object storage é ordens de magnitude mais barato", "Médio — mesmo perfil de custo do Jaeger"],
+    ["Índice / query", "Índice completo por serviço, operação e tags", "Índice mínimo (trace ID) + <strong>TraceQL</strong> pra busca estrutural", "Índice por serviço/tag, conforme o storage escolhido"],
+    ["Correlação logs/métricas", "Manual, via <code>trace_id</code> compartilhado", "<strong style='color:#34d399'>Nativa</strong> — trace-to-logs (Loki) e trace-to-metrics (exemplars, span-metrics)", "Nenhuma nativa"],
+    ["Ingestão OTLP", "Nativa — o Collector do Jaeger v2 é um OTel Collector", "Nativa — o <code>distributor</code> recebe OTLP direto", "Via exporter Zipkin do Collector — a API própria (v2) não fala OTLP"],
+    ["Maturidade / origem", "CNCF graduated — Uber, 2015", "Grafana Labs, 2020", "<strong style='color:#fbbf24'>O pioneiro</strong> — Twitter, 2012"],
+  ]}
+/>
+
+Na prática: se sua stack de métricas e logs já é Grafana + Prometheus + Loki, o Tempo fecha o tripé com o menor custo operacional. Se você precisa de um backend de tracing standalone, maduro e battle-tested, o Jaeger é a escolha mais estabelecida. O Zipkin raramente é a escolha pra um projeto novo hoje — mas se uma stack Java/Spring mais antiga já fala B3/Zipkin, não é preciso reinstrumentar nada: aponte pro Jaeger ou pro Tempo, que aceitam o formato nativamente.
+
+## Boas Práticas
+
+<Callout type="tip">
+**Contexto não propaga sozinho em filas.** `traceparent`/B3 seguem de graça em chamadas HTTP/gRPC síncronas via instrumentação automática, mas em mensageria (Kafka, RabbitMQ, SQS) alguém precisa copiar o contexto pros headers da mensagem na publicação e recriá-lo no consumo — senão cada mensagem começa um trace novo e desconectado. Se o consumidor processa um lote misturando várias origens, use **links** em vez de forçar um parent só.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#818cf8" title="Instrumente via OpenTelemetry">
+    Nunca acople o código de negócio a um SDK específico de Jaeger, Tempo ou Zipkin. Instrumente com o SDK OTel e escolha o backend só na configuração do exporter/Collector — trocar de backend vira redeploy de config, não reescrita de código.
+  </Card>
+  <Card accent="#66bb6a" title="Sampling em camadas">
+    Combine uma taxa head-based baixa com tail-based, ou no mínimo uma regra de sempre-guardar erro e p99. Ajuste por rota: checkout e pagamento merecem mais amostragem que um health-check.
+  </Card>
+  <Card accent="#fbbf24" title="Correlacione, não duplique">
+    Propague o <code>trace_id</code> pros logs estruturados e use exemplars nas métricas. Um clique deve levar do gráfico de latência pro trace exato, e do trace pro log exato — sem grep manual.
+  </Card>
+  <Card accent="#f472b6" title="Nomes de span com baixa cardinalidade">
+    O <code>name</code> do span é a rota ou operação (<code>POST /pedidos</code>), não a URL completa com IDs. Detalhes de alta cardinalidade (order_id, user_id) vão em atributos, nunca no nome.
+  </Card>
+  <Card accent="#fb923c" title="Retenção curta é normal">
+    Trace é caro e raramente precisa de mais que alguns dias a poucas semanas de retenção — diferente de métricas, que valem meses ou anos pra enxergar tendência.
+  </Card>
+  <Card accent="#34d399" title="Instrumente desde o dia 1">
+    Tracing retrofit é dor: reconstruir contexto perdido depois que o sistema já está em produção custa muito mais do que instrumentar desde o início.
+  </Card>
+</CardGrid>

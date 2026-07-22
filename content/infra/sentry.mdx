@@ -1,0 +1,247 @@
+---
+title: "Sentry"
+slug: sentry
+category: infra
+icon: "🚨"
+accent: "#f43f5e"
+description: "Error tracking e performance monitoring: captura de exceções com stack/contexto, agrupamento de issues, releases/source maps e alertas."
+tags: [Sentry, Error Tracking, APM, Releases]
+order: 15
+updated: 2026-07-22
+---
+
+## O que é o Sentry
+
+**Sentry** é uma plataforma de **error tracking** com performance monitoring embutido: o foco central é capturar exceções que acontecem em produção — com stack trace completo, contexto de execução e agrupamento automático — direto do código da aplicação via SDK, sem precisar operar um Collector ou pipeline de telemetria separado.
+
+Diferente dos três pilares clássicos de observabilidade (logs, métricas, traces), o Sentry parte de um **evento**: algo quebrou, ou uma transação ficou lenta, e o SDK reporta esse evento já com tudo que é necessário pra investigar sem precisar reproduzir o problema localmente depois.
+
+<CardGrid cols={3}>
+  <Card accent="#f43f5e" title="Error Tracking">
+    Captura exceções (tratadas ou não), agrupa em issues, mostra stack trace, contexto e frequência.
+  </Card>
+  <Card accent="#8b5cf6" title="Performance Monitoring">
+    Rastreia transactions e spans — tempo de resposta de rotas, queries, chamadas externas.
+  </Card>
+  <Card accent="#2dd4bf" title="Session Replay">
+    Grava a sessão do usuário no frontend (DOM, cliques, network) pra reproduzir visualmente o erro.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Error tracking ≠ observabilidade completa.** O Sentry responde muito bem "o que quebrou, onde, pra quem e desde quando" — mas não substitui métricas de infraestrutura (CPU, memória, disco) nem logs de auditoria de alto volume. Times maduros usam Sentry pra erros e frontend, e complementam com Prometheus/Grafana, ELK ou um APM completo pra visão de infra e SLOs (comparação na seção final).
+</Callout>
+
+## Fluxo de um Erro
+
+Do momento em que uma exceção acontece até alguém ser avisado, o evento passa por algumas etapas:
+
+<FlowDiagram
+  title="DE UMA EXCECAO A UM ALERTA"
+  rows={[
+    { box: "Exceção lançada no app", color: "#f87171", note: "throw não tratado ou catch manual", tip: "Pode ser uma exceção não tratada (que geraria um 500 silencioso) ou uma captura manual via captureException" },
+    { box: "SDK Sentry (client)", color: "#f43f5e", note: "captura stack trace + contexto local", tip: "Anexa tudo que o Scope já acumulou antes do erro: breadcrumbs, tags, usuário, release, environment" },
+    { box: "Ingest / Relay", color: "#fb923c", note: "recebe, valida, aplica scrubbing server-side", tip: "Regras de data scrubbing e rate limiting rodam aqui, antes do evento ser persistido" },
+    { box: "Agrupamento em Issue", color: "#a78bfa", note: "fingerprint agrupa por causa raiz", tip: "Eventos com o mesmo fingerprint viram nova ocorrência da mesma issue, não uma issue nova" },
+    { box: "Alerta / Notificação", color: "#38bdf8", note: "Slack, email, PagerDuty, webhook", tip: "Dispara pela regra configurada: issue nova, regressão de release, ou taxa de eventos acima do threshold" },
+  ]}
+/>
+
+O SDK roda dentro do processo da aplicação: intercepta exceções não tratadas via handler global da linguagem/framework, e também aceita captura manual em qualquer bloco `try/catch`. Antes de enviar, anexa tudo que o `Scope` atual já acumulou. O evento viaja até o ingest (o componente interno costuma ser chamado de Relay), que valida o payload e aplica regras de scrubbing definidas no servidor antes de persistir. Daqui em diante entra o agrupamento, que decide se isso é uma issue nova ou mais uma ocorrência de uma issue já conhecida.
+
+## Agrupamento (Grouping) e Deduplicação
+
+Se 10 mil requisições batem no mesmo bug em produção, você não quer 10 mil issues — quer **uma** issue com 10 mil eventos, uma contagem e uma tendência (subindo, estável, caindo). É isso que o agrupamento faz.
+
+Por padrão, o Sentry calcula um **fingerprint** a partir do tipo da exceção, da mensagem normalizada e dos frames mais relevantes do stack trace — priorizando código da própria aplicação sobre frames de bibliotecas de terceiros. Eventos com o mesmo fingerprint viram **ocorrências** da mesma issue; eventos com fingerprint diferente abrem uma issue nova.
+
+Quando o agrupamento padrão erra o alvo (por exemplo, um mesmo stack trace genérico escondendo causas de negócio diferentes), dá pra customizar via `SetBeforeSend`:
+
+```csharp
+public class PedidoRpcException : Exception
+{
+    public string Function { get; set; }      // nome da chamada RPC (ex.: "DebitarEstoque")
+    public string ErrorCode { get; set; }      // codigo retornado pelo servico remoto
+}
+
+// dentro de UseSentry(o => ...) na inicializacao do SDK
+o.SetBeforeSend(@event =>
+{
+    if (@event.Exception is PedidoRpcException ex)
+    {
+        @event.SetFingerprint(new[]
+        {
+            "{{ default }}",   // mantem o agrupamento padrao como base
+            ex.Function,
+            ex.ErrorCode,
+        });
+    }
+
+    return @event;
+});
+```
+
+Prefixar com `{{ default }}` mantém o comportamento padrão e só adiciona granularidade — sem o prefixo, você sobrescreve o agrupamento inteiro (útil pra forçar vários stacks diferentes numa única issue "conhecida").
+
+<Callout type="tip">
+Uma issue marcada como **resolvida** que volta a acontecer numa release nova é chamada de **regressão** — o Sentry reabre a issue automaticamente e a trata como um sinal mais grave que um erro novo genérico (mais sobre isso na seção de boas práticas).
+</Callout>
+
+## Contexto Rico
+
+Uma issue sem contexto é só um stack trace — útil, mas limitado. O SDK enriquece cada evento automaticamente com várias camadas de contexto:
+
+<CardGrid cols={2}>
+  <Card accent="#34d399" title="Breadcrumbs">
+    Trilha de eventos antes do erro — cliques, chamadas HTTP, queries, logs. Reconstrói "o que aconteceu antes" sem precisar de session replay.
+  </Card>
+  <Card accent="#fbbf24" title="Tags">
+    Pares chave/valor indexados e pesquisáveis (`environment`, `release`, `server_name`, tags customizadas). Filtra e agrupa issues por qualquer tag.
+  </Card>
+  <Card accent="#818cf8" title="User Context">
+    Quem foi afetado — id, email, IP (opcional). Responde "quantos clientes únicos bateram nesse bug" e permite abrir só os erros de um cliente específico.
+  </Card>
+  <Card accent="#66bb6a" title="Environment">
+    Separa `production`, `staging`, `development` no mesmo projeto. Sem isso, ruído de dev polui o mesmo feed de erros de produção.
+  </Card>
+</CardGrid>
+
+Registrar um breadcrumb manual é direto:
+
+```csharp
+SentrySdk.AddBreadcrumb(
+    message: "Usuario autenticado: " + user.Email,
+    category: "auth",
+    level: BreadcrumbLevel.Info);
+```
+
+## Releases e Source Maps
+
+Uma **release** é um identificador único de versão (a tag do build, o SHA do commit, ou um semver) enviado junto de cada evento. É o que permite responder duas perguntas centrais depois de um deploy:
+
+- Esse erro é novo nessa versão, ou já existia antes?
+- Uma issue que estava resolvida voltou a acontecer numa release nova? (Isso é a regressão mencionada acima.)
+
+Releases também habilitam **suspect commits**: o Sentry cruza o intervalo de commits entre duas releases com os arquivos que aparecem no stack trace pra sugerir qual commit provavelmente introduziu o bug.
+
+Pra aplicações **JavaScript/TypeScript**, o stack trace em produção normalmente aponta pra código minificado e empacotado — algo como `t.a(e,n)` em vez do nome de função e da linha originais. **Source maps** resolvem isso: são arquivos gerados no build que mapeiam o código transformado de volta ao código-fonte. Quando o source map da release é enviado ao Sentry, o stack trace exibido na issue já vem des-minificado, com arquivo, função e linha reais:
+
+```typescript
+// next.config.ts - associa o build a uma release e sobe os source maps automaticamente
+export default withSentryConfig(nextConfig, {
+  org: "mendez-tech",
+  project: "loja-frontend",
+  authToken: process.env.SENTRY_AUTH_TOKEN,   // token de build, nunca exposto no client
+  release: { name: process.env.GIT_SHA },
+});
+```
+
+<Callout type="warn">
+Gere os source maps no build, mas não os sirva publicamente junto ao bundle — suba direto pro Sentry (hidden source maps). Um `.map` público na mesma pasta do `.js` vaza o código-fonte original pra qualquer um que abra o DevTools.
+</Callout>
+
+## Performance e Tracing
+
+Além de erros, o SDK instrumenta performance: cada requisição vira uma **transaction**, dividida em **spans** (uma query, uma chamada HTTP externa, um render) — a mesma ideia de trace/span dos três pilares clássicos, já com UI de agregação (p50/p95/p99 por rota) pronta dentro do produto.
+
+<CardGrid cols={2}>
+  <Card accent="#8b5cf6" title="Transactions">
+    Unidade de nível superior — uma requisição HTTP, um job, um page load. Tem duração total e um nome (normalmente a rota).
+  </Card>
+  <Card accent="#a78bfa" title="Spans">
+    Sub-operações dentro de uma transaction, em árvore. Mostra onde o tempo foi gasto: query lenta, chamada externa, serialização.
+  </Card>
+  <Card accent="#2dd4bf" title="Web Vitals">
+    No frontend, captura métricas de UX real do usuário — LCP, CLS, INP — sem instrumentação manual.
+  </Card>
+  <Card accent="#f472b6" title="Session Replay">
+    Grava DOM, cliques e requests do navegador numa sessão real, sincronizado com o erro. Reproduz visualmente o que o usuário via no momento do crash.
+  </Card>
+</CardGrid>
+
+Capturar 100% das transactions em produção de alto tráfego sai caro e raramente é necessário — o volume é controlado pelo `TracesSampleRate` (ex.: `0.2` = 20% das transactions viram amostra). É o mesmo trade-off de sampling de traces do OpenTelemetry.
+
+## SDK: Inicialização e Captura Manual
+
+Inicialização típica em uma app ASP.NET Core, conectando ao projeto no Sentry:
+
+```csharp
+// Program.cs - inicializacao do SDK
+var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.UseSentry(o =>
+{
+    o.Dsn = "https://<key>@o<orgId>.ingest.sentry.io/<projectId>";
+    o.Environment = builder.Environment.EnvironmentName;
+    o.Release = "pedidos-api@2026.07.22+a1b2c3d";   // versionado pelo CI
+    o.TracesSampleRate = 0.2;                         // 20% das transactions
+    o.SendDefaultPii = false;                         // nao envia IP/headers por padrao
+});
+
+var app = builder.Build();
+app.UseSentryTracing();   // habilita spans automaticos por rota
+app.Run();
+```
+
+Captura manual, pra exceções que a aplicação já trata mas que ainda merecem visibilidade:
+
+```csharp
+try
+{
+    await estoqueClient.DebitarAsync(pedido.Id, pedido.Itens);
+}
+catch (Exception ex)
+{
+    SentrySdk.ConfigureScope(scope =>
+    {
+        scope.SetTag("order_id", pedido.Id);
+        scope.User = new User { Id = pedido.ClienteId };
+    });
+    SentrySdk.CaptureException(ex);
+    throw;   // o Sentry so observa - quem decide o fluxo de erro continua sendo o app
+}
+```
+
+<Callout type="tip">
+**Automático cobre o principal.** Exceções não tratadas (que gerariam um 500 sem nenhum registro) já são capturadas sem código extra, só com `UseSentry` no startup. Reserve `CaptureException` manual pra exceções que você **já trata** com um `catch` que segue o fluxo normal — sem a chamada manual, elas nunca chegam ao Sentry.
+</Callout>
+
+## Sentry vs Observabilidade Completa
+
+Sentry não compete com um APM completo (Datadog, New Relic) ou uma stack OpenTelemetry — eles resolvem problemas diferentes e, na prática, convivem no mesmo time:
+
+<ComparisonTable
+  head={["Dimensão", "Sentry", "Datadog / New Relic / OTel completo"]}
+  rows={[
+    ["Foco principal", "<strong style='color:#f43f5e'>Erros</strong> e exceções: stack trace, agrupamento em issues, contexto de código", "Observabilidade ampla: logs + métricas + traces + infraestrutura"],
+    ["Frontend / JS", "Muito forte: session replay, source maps, Web Vitals nativos", "Cobre, mas historicamente com DX de frontend mais fraca"],
+    ["Setup inicial", "SDK leve, minutos até o primeiro erro capturado", "Collector, pipelines e dashboards — mais peça de infra pra manter"],
+    ["Instrumentação", "Automática por SDK de linguagem + captura manual pontual", "OpenTelemetry vendor-neutral, ou agent proprietário"],
+    ["Alertas típicos", "Centrados em issue de código: nova, regressão, taxa de erro", "Centrados em SLO/infra: CPU, latência de serviço, saturação"],
+    ["Modelo de custo", "Por evento/erro (volume de issues)", "Por host, métrica ou GB ingerido — escala rápido com infra"],
+    ["Quando usar junto", "Debugar o erro exato: stack, contexto, usuário afetado", "Correlacionar com infra, SLOs e outros serviços na mesma incidência"],
+  ]}
+/>
+
+Um padrão comum: Sentry cobre erros e frontend; Prometheus/Grafana ou um APM cobrem infraestrutura e SLOs. O `trace_id` do OpenTelemetry pode inclusive ser propagado como tag no evento do Sentry, permitindo pular de uma issue de erro direto pro trace distribuído que a originou.
+
+## Boas Práticas e Pegadinhas
+
+<Callout type="warn">
+**Nunca envie PII sem querer.** Por padrão `SendDefaultPii` vem desligado, mas breadcrumbs de HTTP, corpo de requisição e mensagens de log podem carregar senha, token, cartão ou CPF sem você perceber. Use `SetBeforeSend` (ou o data scrubber do servidor, em Project Settings) pra redigir campos sensíveis antes do evento sair da sua rede — trate o Sentry com a mesma cautela que um agregador de log.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#eab308" title="Sampling de performance">
+    `TracesSampleRate` em `1.0` parece bom em dev, mas em produção de alto tráfego estoura custo e quota rápido. Comece baixo (`0.1`–`0.2`) e suba só se precisar de mais cobertura pra investigar um caso específico.
+  </Card>
+  <Card accent="#38bdf8" title="Alerte em regressões, não só issues novas">
+    Uma issue resolvida que volta numa release nova é um sinal mais grave que um erro genérico — geralmente indica que o fix não pegou ou foi revertido. Configure uma regra de alerta separada pra regressão.
+  </Card>
+  <Card accent="#fb923c" title="Fingerprint customizado com moderação">
+    Agrupar demais esconde variantes importantes do mesmo bug; agrupar de menos enche o projeto de issues duplicadas. Ajuste fingerprint só quando o agrupamento padrão (stack trace) claramente erra o alvo.
+  </Card>
+  <Card accent="#f472b6" title="Ignore rules e quota">
+    Erro de bot, extensão de navegador ou rede do cliente (ex.: `ChunkLoadError`) é ruído clássico. Use inbound filters/ignore rules pra não gastar quota — e atenção do time — com eventos que ninguém vai agir.
+  </Card>
+</CardGrid>

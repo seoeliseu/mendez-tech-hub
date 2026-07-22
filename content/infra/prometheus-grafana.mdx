@@ -1,0 +1,396 @@
+---
+title: "Prometheus & Grafana"
+slug: prometheus-grafana
+category: infra
+icon: "📊"
+accent: "#e6522c"
+description: "Métricas com Prometheus (pull, TSDB, PromQL, Alertmanager) e visualização/alerta com Grafana — o par padrão do mercado."
+tags: [Prometheus, Grafana, PromQL, Métricas]
+order: 10
+updated: 2026-07-22
+---
+
+## Prometheus: Modelo Pull, Exporters e Service Discovery
+
+Prometheus é um sistema de monitoramento e alerta open-source focado em **métricas** — números agregados no tempo, não logs nem traces. A decisão de design mais importante (e mais diferente de ferramentas como StatsD ou agentes que empurram dados sozinhos) é o **modelo pull**: o próprio Prometheus decide quando e o que coletar, puxando (raspando, ou *scraping*) dados via HTTP de cada alvo, em vez de esperar que cada aplicação empurre (*push*) métricas pra ele.
+
+Cada alvo expõe um endpoint HTTP `/metrics` em texto plano (o *exposition format*). O Prometheus visita esse endpoint periodicamente — o `scrape_interval`, tipicamente 15s a 60s — e grava o resultado como uma amostra por série temporal.
+
+```yaml
+# prometheus.yml
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "node"
+    static_configs:
+      - targets: ["10.0.0.11:9100", "10.0.0.12:9100"]
+
+  - job_name: "pedidos-api"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["pedidos-api:8080"]
+```
+
+<Callout type="tip">
+**Pull facilita saúde e descoberta.** Se um alvo não responde ao scrape, o Prometheus já sabe — a série `up` vai pra `0` automaticamente. No modelo push, um agente que morre silenciosamente só é percebido se alguém notar a ausência de dados.
+</Callout>
+
+### Exporters e Client Libraries
+
+Nem todo sistema fala o protocolo do Prometheus nativamente. Duas formas de instrumentar:
+
+- **Client libraries** — bibliotecas oficiais (Go, Python, Java, .NET, Rust...) importadas direto no código da aplicação, pra expor contadores, gauges e histograms customizados em `/metrics`.
+- **Exporters** — processos auxiliares que traduzem as métricas de um sistema de terceiros (que você não controla ou não vale a pena instrumentar) para o formato Prometheus. O mais comum é o **node_exporter**, que expõe métricas de SO — CPU, memória, disco, rede — de qualquer máquina Linux/Windows. Outros comuns: `blackbox_exporter` (probes de HTTP/TCP/ICMP de fora pra dentro), `mysqld_exporter`, `cadvisor` (containers).
+
+### Service Discovery
+
+Em ambientes dinâmicos (Kubernetes, autoscaling), listar `targets` fixos não escala. O Prometheus suporta **service discovery** nativo — `kubernetes_sd_configs`, `consul_sd_configs`, `file_sd_configs`, `ec2_sd_configs` — que descobre alvos automaticamente e os re-rotula via `relabel_configs` antes do scrape, por exemplo usando uma annotation do Pod pra decidir se ele deve ou não ser raspado.
+
+## TSDB e Tipos de Métrica
+
+Toda métrica no Prometheus é identificada por um **nome** mais um conjunto de **labels** (pares chave-valor). Essa combinação — nome + labels — é a chave única de uma **série temporal**; cada valor distinto de label cria uma série nova, gravada em disco pelo TSDB (time series database) embutido.
+
+```text
+http_requests_total{method="GET", route="/pedidos", status="200"}
+http_requests_total{method="GET", route="/pedidos", status="500"}
+```
+
+Essas duas linhas são **duas séries diferentes**, não uma métrica com duas leituras — e isso é a raiz do problema de cardinalidade (ver Trade-offs, adiante).
+
+O TSDB grava em blocos de 2h compactados no disco local, com um WAL (*write-ahead log*) pra durabilidade. Por padrão retém **15 dias** — suficiente pra operação do dia a dia, curto demais pra capacity planning anual (ver seção de escala).
+
+### Os 4 Tipos de Métrica
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" title="Counter">
+    Só sobe (ou zera no restart do processo). Ex.: <code>http_requests_total</code>, <code>errors_total</code>. Nunca leia o valor bruto — sempre envolva em <code>rate()</code> ou <code>increase()</code>.
+  </Card>
+  <Card accent="#38bdf8" title="Gauge">
+    Sobe e desce livremente. Ex.: uso de memória, conexões abertas, tamanho de fila, temperatura.
+  </Card>
+  <Card accent="#a78bfa" title="Histogram">
+    Distribui observações em buckets configuráveis (<code>_bucket\{le="..."\}</code>) mais <code>_sum</code> e <code>_count</code>. Permite calcular percentil no servidor com <code>histogram_quantile()</code>, agregando entre instâncias.
+  </Card>
+  <Card accent="#fb923c" title="Summary">
+    Calcula quantis (ex.: p50, p95) **no cliente**, antes de expor. Mais barato de consultar, mas os quantis não são agregáveis entre instâncias — não dá pra fazer "média de percentil".
+  </Card>
+</CardGrid>
+
+Um histogram por baixo do capô se parece com isto:
+
+```text
+http_request_duration_seconds_bucket{le="0.1"} 8113
+http_request_duration_seconds_bucket{le="0.5"} 14200
+http_request_duration_seconds_bucket{le="1"} 14750
+http_request_duration_seconds_bucket{le="+Inf"} 14827
+http_request_duration_seconds_sum 3421.7
+http_request_duration_seconds_count 14827
+```
+
+<Callout type="info">
+**Histogram vs Summary não é só estilo.** Se você precisa agregar p95 de vários pods num único número (o caso comum), só o histogram permite — via `histogram_quantile(0.95, sum by (le) (rate(...)))`. O summary trava o cálculo por instância no momento da exposição, sem jeito de combinar depois.
+</Callout>
+
+## PromQL na Prática
+
+PromQL é a linguagem de consulta do Prometheus — funcional, não declarativa como SQL. Um seletor básico já retorna um **vetor instantâneo** (o valor mais recente de cada série que casa os labels); acrescentar um intervalo entre colchetes, tipo `[5m]`, vira um **vetor de range** (todos os pontos daquela janela), necessário pra funções como `rate()`.
+
+### rate() é quase sempre a resposta certa
+
+`rate()` calcula a taxa média de crescimento por segundo de um counter dentro da janela, e trata reset (restart do processo) automaticamente. Prefira sempre `rate()` a olhar o counter bruto:
+
+```promql
+# requisicoes por segundo, nos ultimos 5 minutos
+rate(http_requests_total[5m])
+
+# taxa de erro 5xx
+rate(http_requests_total{status=~"5.."}[5m])
+```
+
+`irate()` existe (usa só os 2 últimos pontos da janela — mais reativo, mais ruidoso) mas é raro fora de gráficos ad-hoc; pra alertas e dashboards, `rate()` é o padrão.
+
+### Percentis com histogram_quantile()
+
+```promql
+# p95 de latencia HTTP, agregando todas as instancias do job
+histogram_quantile(0.95,
+  sum by (le) (rate(http_request_duration_seconds_bucket[5m]))
+)
+```
+
+O `le` (*less than or equal*) é o label que o histogram usa pra marcar os buckets — precisa estar presente no `by (...)` pra `histogram_quantile()` funcionar.
+
+### Agregação: by e without
+
+```promql
+# soma, mantendo so o label "job" (reduz cardinalidade de saida)
+sum by (job) (
+  rate(http_requests_total[5m])
+)
+
+# soma, descartando so o label "instance" (mantem todo o resto)
+sum without (instance) (
+  memory_consumption_bytes
+)
+```
+
+Use `by (...)` quando você sabe exatamente quais labels quer manter; `without (...)` quando quer manter "tudo, menos isso". `sum`, `avg`, `max`, `min`, `count` e `topk(n, ...)` seguem a mesma sintaxe de agregação.
+
+<Callout type="tip">
+**Grave o que você consulta toda hora.** Um `histogram_quantile` como o de cima, rodando em 10 dashboards, é 10x o custo de avaliação. Vire uma **recording rule** (próxima seção) e consulte o resultado pré-calculado.
+</Callout>
+
+## Alerting Rules e Recording Rules
+
+Regras ficam em arquivos separados, referenciados no `prometheus.yml` via `rule_files`, e avaliadas no `evaluation_interval` (padrão 15s). Cada arquivo tem `groups`; cada grupo tem `name` e uma lista de `rules` — regras do mesmo grupo são avaliadas em sequência, grupos diferentes em paralelo.
+
+### Recording Rules
+
+Pré-computam uma expressão cara ou muito repetida e gravam o resultado como uma nova série. Usadas pra acelerar dashboards e pra dar nome estável a algo que um alerta vai consultar depois. Convenção de nome sugerida pela própria documentação: `nivel:metrica:operacoes`.
+
+```yaml
+groups:
+  - name: pedidos-api-agregadas
+    rules:
+      - record: job:http_requests:rate5m
+        expr: sum by (job) (rate(http_requests_total[5m]))
+
+      - record: job:http_request_duration_seconds:p95_5m
+        expr: >
+          histogram_quantile(0.95,
+            sum by (job, le) (rate(http_request_duration_seconds_bucket[5m]))
+          )
+```
+
+### Alerting Rules
+
+Uma alerting rule é uma expressão PromQL que, quando retorna algum resultado, vira um alerta **pending**; se continuar retornando resultado por mais tempo que o `for:`, vira **firing** e é enviado ao Alertmanager. O `for:` existe justamente pra evitar alertar em todo blip passageiro.
+
+```yaml
+groups:
+  - name: pedidos-api-alertas
+    rules:
+      - alert: InstanceDown
+        expr: up{job="pedidos-api"} == 0
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Instância {{ $labels.instance }} fora do ar"
+          description: "{{ $labels.instance }} do job {{ $labels.job }} não responde há mais de 5 minutos."
+
+      - alert: HighErrorRate
+        expr: |
+          job:http_requests:rate5m{job="pedidos-api", status=~"5.."} > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Taxa de erro alta em {{ $labels.job }}"
+          description: "Mais de 5% das requisições falhando com 5xx nos últimos 10 minutos (valor atual: {{ $value }})."
+```
+
+<Callout type="warn">
+**`for:` é sua proteção contra flapping.** Sem ele, todo alerta dispara e resolve a cada avaliação instável. Mas `for:` alto demais atrasa a detecção de incidentes reais — 5 a 10 minutos é um ponto de partida razoável; ajuste pelo SLO do serviço.
+</Callout>
+
+## Alertmanager: Roteamento, Silêncio e Deduplicação
+
+O Alertmanager é um binário separado do Prometheus. O Prometheus só avalia regras e decide "isso está firing"; é o Alertmanager que decide **quem** recebe, **como agrupado** e **com que frequência**. Um ou mais Prometheus apontam pra ele via bloco `alerting:` no `prometheus.yml`.
+
+### Agrupamento e Deduplicação
+
+Alertas com os mesmos labels de `group_by` (ex.: `alertname` + `cluster`) são agrupados numa única notificação, em vez de uma mensagem por série. Três temporizadores controlam o ritmo:
+
+- `group_wait` — espera inicial antes de mandar a primeira notificação de um grupo novo (dá tempo de outros alertas relacionados chegarem e entrarem no mesmo pacote).
+- `group_interval` — espera antes de mandar um novo lote pro mesmo grupo já existente.
+- `repeat_interval` — de quanto em quanto tempo reenviar um alerta que já foi notificado e continua firing.
+
+Se você roda Prometheus em par (HA, dois servidores avaliando as mesmas regras), o Alertmanager também **deduplica** — dois disparos idênticos (mesmo fingerprint de labels) viram uma notificação só, não duas.
+
+### Roteamento (Routing Tree)
+
+A `route` raiz define o receiver padrão; `routes` filhas usam `matchers` (com suporte a regex) pra desviar alertas específicos — cada alerta desce a árvore até achar o primeiro nó que casa, ou segue avaliando irmãos mesmo depois de um match se a rota tiver `continue: true`.
+
+```yaml
+route:
+  receiver: "time-plataforma"
+  group_by: [alertname, cluster]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers:
+        - service=~"pedidos|estoque"
+      receiver: "time-pedidos"
+      routes:
+        - matchers:
+            - severity="critical"
+          receiver: "time-pedidos-pager"
+
+inhibit_rules:
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity="warning"
+    equal: ["alertname", "cluster"]
+
+receivers:
+  - name: "time-plataforma"
+    slack_configs:
+      - channel: "#alertas-plataforma"
+  - name: "time-pedidos-pager"
+    pagerduty_configs:
+      - routing_key: "<chave-pagerduty>"
+```
+
+### Silêncio e Inibição
+
+**Silence** é uma regra temporária, criada manualmente (UI ou API) pra calar alertas que casem um seletor de labels durante uma janela — o caso clássico é uma manutenção programada. **Inibição** (`inhibit_rules`) é automática: se um alerta "source" (ex.: `severity="critical"`) já está firing, alertas "target" (ex.: `severity="warning"`) com os mesmos labels em `equal` ficam mudos — não faz sentido avisar de latência alta num node que já está inteiro fora do ar.
+
+## Grafana: Dashboards, Painéis e Fontes de Dados
+
+Grafana é a camada de visualização e (opcionalmente) alerta — e é **agnóstica de fonte de dados**: o mesmo dashboard pode combinar painéis vindos do Prometheus, Loki, Tempo, PostgreSQL, CloudWatch, Elasticsearch etc. lado a lado.
+
+### Dashboards e Painéis (Panels)
+
+Um **dashboard** é uma coleção de **painéis** (panels) — cada painel roda uma ou mais queries contra uma data source e renderiza o resultado num visual: série temporal, `stat` (valor único), gauge, tabela, heatmap, bar gauge... A escolha do painel importa tanto quanto a query: p95 de latência combina melhor com série temporal (mostra tendência); "erros nos últimos 5 min" combina melhor com um `stat` grande.
+
+### Fontes de Dados (Data Sources)
+
+Data sources podem ser cadastradas na UI ou **provisionadas** via YAML — versionável em git, reprodutível em todo ambiente novo:
+
+```yaml
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    url: http://loki:3100
+```
+
+Provisionar múltiplas fontes assim é o que permite um painel de logs (Loki) e um painel de métricas (Prometheus) convivendo no mesmo dashboard, correlacionados pela mesma janela de tempo ou pelo mesmo `trace_id`.
+
+### Variáveis de Dashboard
+
+Variáveis (`$variavel`) viram dropdowns no topo do dashboard e evitam duplicar um dashboard por serviço, ambiente ou cluster. Uma variável `job`, populada por `label_values(up, job)`, deixa a mesma query reaproveitável:
+
+```promql
+up{job="$job", instance=~"$instance"}
+```
+
+Trocar o valor no dropdown re-executa todos os painéis que referenciam `$job` — um dashboard, N serviços.
+
+### Alerting Unificado
+
+O Grafana tem seu **próprio** motor de alerta (*unified alerting*), independente do Alertmanager do Prometheus — e ele consegue alertar sobre **qualquer** data source, não só Prometheus (dá pra alertar em cima de uma query no Postgres, por exemplo). Os conceitos centrais:
+
+<CardGrid cols={2}>
+  <Card accent="#e6522c" title="Alert rules">
+    Query + condição + intervalo de avaliação, parecido com uma alerting rule do Prometheus — mas roda dentro do próprio Grafana.
+  </Card>
+  <Card accent="#38bdf8" title="Contact points">
+    Destino da notificação (Slack, e-mail, webhook, PagerDuty...) — substituem os antigos "notification channels".
+  </Card>
+  <Card accent="#a78bfa" title="Notification policies">
+    Árvore de roteamento por label, no mesmo espírito da `route` do Alertmanager, mas configurada no Grafana.
+  </Card>
+  <Card accent="#66bb6a" title="Silences">
+    Mesma ideia do Alertmanager: muta notificações por seletor de label durante uma janela — só que gerenciado na UI do Grafana.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+**Dois motores de alerta, uma escolha a fazer.** Times que já vivem 100% em Prometheus costumam manter o Alertmanager como fonte única da verdade pra alertas de métricas. Times com fontes de dados variadas (Postgres, CloudWatch, Loki) tendem a centralizar tudo no alerting unificado do Grafana — inclusive apontando-o pra usar o **mesmo** Alertmanager como backend de notificação, se quiser o melhor dos dois mundos.
+</Callout>
+
+## Como Tudo se Junta: do Scrape ao Dashboard e ao Alerta
+
+<FlowDiagram
+  title="PROMETHEUS + GRAFANA — FLUXO COMPLETO"
+  rows={[
+    { box: "Apps e node_exporter expondo /metrics", color: "#e6522c", tip: "Cada alvo expõe suas métricas em texto plano num endpoint HTTP — não envia nada por conta própria." },
+    { box: "Prometheus — scrape loop (pull a cada 15s)", color: "#fb923c", tip: "O Prometheus decide quando puxar, com base no scrape_interval e na service discovery configurada." },
+    { box: "TSDB — series gravadas por labels", color: "#fbbf24", indent: 1, tip: "Cada combinação única de nome + labels vira uma série temporal, gravada em blocos de 2h no disco local." },
+    { box: "Rule evaluator (recording + alerting rules)", color: "#a78bfa", indent: 2, tip: "Roda dentro do próprio Prometheus, no evaluation_interval, consultando o TSDB local." },
+    { box: "Grafana — dashboards via PromQL", color: "#38bdf8", indent: 2, tip: "Consulta o Prometheus como data source, ao vivo, para renderizar painéis." },
+    { box: "Alertmanager — agrupa, roteia, silencia, dedupe", color: "#f87171", indent: 3, tip: "Recebe alertas firing do rule evaluator via HTTP e decide quem notificar e quando." },
+    { box: "Receivers: Slack, PagerDuty, e-mail...", color: "#f472b6", indent: 4, tip: "Ponto final da notificação, configurado nos receivers do Alertmanager." },
+  ]}
+/>
+
+O TSDB é o ponto de junção: alimenta **dois consumidores independentes** — o Grafana, que só lê (consulta ao vivo, nada é alterado), e o rule evaluator do próprio Prometheus, que também só lê, mas grava de volta (recording rules) ou dispara pro Alertmanager (alerting rules). Prometheus e Grafana nunca se comunicam "por dentro" — a integração inteira é uma API HTTP de consulta (PromQL sobre `/api/v1/query`), a mesma que você usaria via `curl`.
+
+## Trade-offs: Pull vs Push, Cardinalidade e Escala
+
+### Pull vs Push
+
+Pull é o padrão do Prometheus, mas nem todo workload cabe nele. Jobs batch/cron de vida curta podem terminar **antes** do próximo scrape chegar — nesse caso, nada é coletado. A saída é o **Pushgateway**: o job faz push pra ele antes de sair, e o Prometheus então faz scrape do Pushgateway normalmente — pull continua sendo o mecanismo real; o Pushgateway só existe pra dar um alvo estável e "sempre presente" pra jobs efêmeros.
+
+<ComparisonTable
+  head={["Aspecto", "Pull (padrão)", "Push (Pushgateway)"]}
+  rows={[
+    ["Quem inicia a coleta", "O Prometheus, no <code>scrape_interval</code>", "O job, uma vez, antes de terminar"],
+    ["Caso de uso ideal", "Serviços de vida longa, sempre no ar", "Batch/cron de vida curta"],
+    ["Detecção de alvo morto", "Automática (<code>up == 0</code>)", "Nenhuma — métrica antiga fica presa até ser apagada manualmente"],
+    ["Ponto único de falha", "Não — cada Prometheus decide sozinho", "Sim, se o Pushgateway cair ou não for dimensionado"],
+  ]}
+/>
+
+<Callout type="warn">
+**Pushgateway não é "push genérico".** Ele não expira métricas sozinho — se você usá-lo pra tudo (em vez de só jobs batch de fato efêmeros), acumula métricas de execuções antigas pra sempre, e o Prometheus passa a "ver" um serviço como vivo quando não está.
+</Callout>
+
+### Cardinalidade
+
+Cada label novo multiplica o número de séries pelos valores distintos que ele assume. Um label de baixa cardinalidade (`status`, `method`) custa pouco; um de alta cardinalidade (`user_id`, `request_id`, URL completa com querystring) pode multiplicar a base de séries por milhares e estourar a memória do Prometheus. É o trade-off central de métricas: granularidade por label custa memória e velocidade de query — não existe granularidade de graça.
+
+### Retenção e Escala Horizontal
+
+O Prometheus sozinho é **single-node**: TSDB local, sem replicação nativa, retenção prática limitada pelo disco (padrão 15 dias). Pra retenção longa (meses ou anos) e visão global multi-cluster, a métrica sai do Prometheus via `remote_write` pra um backend de longo prazo:
+
+<CardGrid cols={3}>
+  <Card accent="#a78bfa" title="Thanos">
+    Sidecar + object storage (S3/GCS) + Querier global. Mantém o Prometheus existente como fonte, adiciona downsampling e retenção "infinita" em cima.
+  </Card>
+  <Card accent="#38bdf8" title="Cortex">
+    Multi-tenant, horizontalmente escalável, recebe via <code>remote_write</code>. Base original de onde o Mimir nasceu (fork).
+  </Card>
+  <Card accent="#f472b6" title="Grafana Mimir">
+    Fork do Cortex mantido pela Grafana Labs. Mesma proposta — escala horizontal, multi-tenant, retenção longa — com integração de primeira classe ao ecossistema Grafana.
+  </Card>
+</CardGrid>
+
+## Boas Práticas e Pegadinhas
+
+<Callout type="warn">
+**Cardinalidade alta explode custo.** Nunca use como label algo com cardinalidade não limitada: `user_id`, `email`, `request_id`, URL completa com querystring, timestamp. Cada valor novo é uma série nova, pra sempre (ou até o retention expirar) — e a fatura de memória do Prometheus sobe junto.
+</Callout>
+
+<Callout type="tip">
+**Alerte em sintomas, não em causas internas.** Prefira "p95 de latência acima do SLO" a "CPU do pod acima de 80%" — CPU alta nem sempre incomoda o usuário, e p95 ruim sempre incomoda. Menos alertas, mais sinal: quem recebe pager cansado para de olhar.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" title="rate() em counter, nunca em gauge">
+    <code>rate()</code> assume crescimento monotônico — aplicar num gauge (que sobe e desce) produz números sem sentido.
+  </Card>
+  <Card accent="#818cf8" title="Recording rules pro que é caro">
+    Se uma query aparece em 3+ dashboards ou alimenta um alerta, vire recording rule — evita recalcular o mesmo <code>histogram_quantile</code> pesado toda vez.
+  </Card>
+  <Card accent="#fbbf24" title="Dashboards como código">
+    Exporte dashboards como JSON (ou gere via Jsonnet/grafonnet) e versione em git. Editar só na UI perde histórico e não sobrevive a um clique errado.
+  </Card>
+  <Card accent="#f87171" title="Pense na retenção antes de precisar dela">
+    Se auditoria ou capacity planning exigem 1 ano de histórico, decida o <code>remote_write</code> (Thanos/Mimir/Cortex) no dia 1 — migrar depois de estourar os 15 dias padrão é bem mais doloroso.
+  </Card>
+</CardGrid>

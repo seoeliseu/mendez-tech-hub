@@ -1,0 +1,295 @@
+---
+title: "OpenTelemetry"
+slug: opentelemetry
+category: infra
+icon: "🛰️"
+accent: "#8b5cf6"
+description: "O padrão aberto e vendor-neutral para instrumentar traces, métricas e logs: API/SDK, Collector, OTLP e instrumentação automática/manual."
+tags: [OpenTelemetry, OTLP, Collector, Instrumentação]
+order: 13
+updated: 2026-07-22
+---
+
+## O Que o OpenTelemetry Resolve
+
+**OpenTelemetry (OTel)** nasceu em 2019 da fusão de dois projetos concorrentes — **OpenTracing** e **OpenCensus** — sob o guarda-chuva da CNCF, hoje um dos projetos com maior atividade de contribuição da fundação, atrás apenas do Kubernetes. O problema que resolve é caro de sentir na pele: antes do OTel, cada backend de observabilidade (Jaeger, Zipkin, Datadog, New Relic...) tinha seu próprio SDK proprietário. Instrumentar uma aplicação significava atrelar o código a um vendor específico — trocar de backend depois virava um projeto de meses, reescrevendo chamadas de instrumentação espalhadas pelo código inteiro.
+
+<CardGrid cols={2}>
+  <Card accent="#f87171" title="Antes do OTel">
+    Cada backend com SDK próprio. Trocar Jaeger por Datadog = reescrever instrumentação em todos os serviços. Logs, métricas e traces com bibliotecas e formatos diferentes, sem correlação nativa entre eles.
+  </Card>
+  <Card accent="#66bb6a" title="Com OpenTelemetry">
+    Uma única instrumentação (API/SDK) por linguagem. Exporta via **OTLP** para qualquer backend compatível. Trocar de vendor = mudar config do exporter, não o código da aplicação.
+  </Card>
+</CardGrid>
+
+OTel padroniza os três pilares — traces, métricas e logs — sob uma única especificação, um único conjunto de SDKs por linguagem e um protocolo de transporte comum (OTLP).
+
+<Callout type="info">
+**OTel não substitui Jaeger, Prometheus ou Datadog — ele os alimenta.** Não é um backend: não tem UI, não guarda dado por conta própria. A pergunta certa não é "OTel ou Prometheus?", é "instrumento com OTel e escolho Prometheus (ou qualquer outro) como backend". São camadas diferentes — instrumentação/transporte vs. armazenamento/visualização.
+</Callout>
+
+## Arquitetura — API, SDK, Collector e OTLP
+
+A arquitetura do OTel combina quatro peças: **API**, **SDK**, **Collector** e o protocolo **OTLP** que os conecta.
+
+### API vs. SDK
+
+<CardGrid cols={2}>
+  <Card accent="#a78bfa" title="API">
+    Apenas interfaces e tipos: `Tracer`, `Meter`, `Logger`. Bibliotecas e frameworks devem depender só da API — se a aplicação não configurar um SDK, as chamadas viram no-op (custo praticamente zero). É o que permite que uma lib de terceiros seja instrumentável sem forçar um SDK concreto em quem a consome.
+  </Card>
+  <Card accent="#8b5cf6" title="SDK">
+    Implementação de fato: samplers, span processors, exporters, detecção de resource (`service.name`, host, container). Configurado uma única vez no bootstrap da aplicação — é o que aparece no bloco de setup mais adiante.
+  </Card>
+</CardGrid>
+
+### Collector e o Protocolo OTLP
+
+O **Collector** é um processo separado da aplicação: recebe telemetria de várias fontes (**receivers**), transforma no meio do caminho (**processors** — filtra, enriquece, faz batching e sampling) e envia a um ou mais destinos (**exporters**). É opcional — a app pode exportar OTLP direto para um backend — mas em qualquer ambiente de produção é o padrão recomendado (motivos na seção dedicada a ele, mais abaixo).
+
+O **OTLP** (OpenTelemetry Protocol) é o protocolo de transporte único para os três sinais: Protobuf sobre gRPC (porta `4317`) ou sobre HTTP (porta `4318`). É o "cano padronizado" que conecta SDK → Collector → backend, desde que o backend fale OTLP nativamente — a maioria fala hoje.
+
+<FlowDiagram
+  title="APP (SDK) → OTLP → COLLECTOR → BACKENDS"
+  rows={[
+    { box: "App instrumentada (SDK OTel)", color: "#8b5cf6", note: "traces + métricas + logs", tip: "ActivitySource/Meter/Logger geram os dados; o SDK aplica resource, sampler e processor antes de exportar" },
+    { box: "OTLP — gRPC :4317 / HTTP :4318", color: "#a78bfa", indent: 1, note: "protocolo único para os 3 sinais", tip: "Protobuf sobre gRPC ou HTTP — mesmo formato de wire para traces, métricas e logs" },
+    { box: "OpenTelemetry Collector", color: "#38bdf8", indent: 1, note: "receivers → processors → exporters", tip: "Desacopla a app do backend: trocar de destino é editar YAML, não fazer redeploy" },
+    { box: "Jaeger / Tempo", color: "#f472b6", indent: 2, note: "traces", tip: "Recebe spans via OTLP e monta a árvore de spans distribuída" },
+    { box: "Prometheus", color: "#66bb6a", indent: 2, note: "métricas", tip: "Recebe por remote-write ou é raspado (scrape) no endpoint exposto pelo Collector" },
+    { box: "Loki", color: "#fbbf24", indent: 2, note: "logs", tip: "Logs estruturados, correlacionados por trace_id com os spans do Jaeger/Tempo" },
+    { box: "Datadog", color: "#fb923c", indent: 2, note: "SaaS all-in-one", tip: "Mesmo OTLP, exporter diferente — troca de vendor sem tocar 1 linha da aplicação" },
+  ]}
+/>
+
+*App gera telemetria via SDK → exporta OTLP (gRPC/HTTP) → Collector processa (batch, sampling, transformação) → distribui para Jaeger/Tempo, Prometheus, Loki e/ou Datadog simultaneamente, sem mudar código da aplicação.*
+
+## Instrumentação Automática vs. Manual
+
+A auto-instrumentação cobre o que é genérico e repetitivo: toda requisição HTTP recebida, toda chamada de saída, toda query ao banco. O span manual é para o que só o domínio de negócio sabe que importa.
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" title="Automática">
+    Pacotes de instrumentação (`AspNetCore`, `Http`, `EntityFrameworkCore`) se conectam aos hooks já existentes do framework — middleware, `DiagnosticSource`, interceptors do EF — e geram spans/métricas sem tocar no código de negócio.
+  </Card>
+  <Card accent="#fb923c" title="Manual">
+    Criada explicitamente com `ActivitySource.StartActivity(...)` em volta de uma operação que importa para o negócio: "debitar cartão", "calcular frete", "reservar estoque". Enriquece o trace com contexto que a auto-instrumentação não enxerga.
+  </Card>
+</CardGrid>
+
+### Setup — Automática + Fontes Manuais
+
+```csharp
+var activitySource = new ActivitySource("PedidosApi.Cobranca");
+
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(
+        serviceName: "pedidos-api",
+        serviceVersion: "1.4.0"))
+    .WithTracing(tracing => tracing
+        .AddSource(activitySource.Name)          // spans manuais deste servico
+        .AddAspNetCoreInstrumentation()           // auto: requests HTTP recebidos
+        .AddHttpClientInstrumentation()           // auto: chamadas HTTP de saida
+        .AddEntityFrameworkCoreInstrumentation()  // auto: queries via EF Core
+        .AddOtlpExporter(o => o.Endpoint = new Uri("http://otel-collector:4317")))
+    .WithMetrics(metrics => metrics
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()              // GC, thread pool, memoria do runtime
+        .AddOtlpExporter(o => o.Endpoint = new Uri("http://otel-collector:4317")));
+```
+
+### Criando um Span Manual
+
+```csharp
+// Span manual em torno de uma operacao critica de negocio
+using var activity = activitySource.StartActivity(
+    "cobranca.debitar-cartao", ActivityKind.Internal);
+
+activity?.SetTag("pedido.id", pedido.Id);
+activity?.SetTag("pagamento.valor", pedido.Valor);
+
+try
+{
+    await gatewayPagamento.DebitarAsync(pedido);
+    activity?.SetStatus(ActivityStatusCode.Ok);
+}
+catch (Exception ex)
+{
+    activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+    activity?.AddEvent(new ActivityEvent("pagamento.falhou"));
+    throw;
+}
+```
+
+<Callout type="tip">
+**Existe um terceiro nível: zero-code.** Além da instrumentação automática "via pacote + algumas linhas em `Program.cs`", há agentes de auto-attach (`OpenTelemetry.AutoInstrumentation` no .NET, o Java agent `.jar`) que instrumentam o processo sem alterar o código-fonte — só variáveis de ambiente e um wrapper de inicialização. Útil para instrumentar rápido serviços legados ou de terceiros.
+</Callout>
+
+## Propagação de Contexto & Semantic Conventions
+
+### Propagação — traceparent, tracestate e Baggage
+
+Um trace só existe porque o contexto (trace-id, span-id do pai, flags de sampling) viaja junto com a requisição entre serviços. Em HTTP/gRPC, a instrumentação automática injeta e extrai esse contexto sozinha via o header padrão do **W3C Trace Context**: `traceparent`.
+
+```text
+traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01
+
+00                                 -> version (fixo, sempre "00")
+4bf92f3577b34da6a3ce929d0e0e4736   -> trace-id: 32 hex (128 bits), igual em toda a jornada
+00f067aa0ba902b7                   -> parent-id: 16 hex (64 bits), span do chamador
+01                                  -> trace-flags: 01 = sampled, 00 = not sampled
+```
+
+Um segundo header, `tracestate`, carrega informação específica de vendor sem interferir no `traceparent`. Já o **Baggage** propaga pares chave-valor de negócio — `tenant_id`, `user_tier` — por toda a cadeia de chamadas; diferente do trace context, esses dados seguem para toda operação subsequente, não só para telemetria, então cuidado com tamanho e com dados sensíveis.
+
+<Callout type="warn">
+**Mensageria não propaga sozinha.** Diferente de HTTP/gRPC, filas (Kafka, RabbitMQ, SQS) não têm um middleware universal injetando `traceparent`. É responsabilidade da aplicação extrair o contexto do span atual e escrever nos headers/atributos da mensagem no producer, e extrair de volta no consumer antes de iniciar seu próprio span — senão cada mensagem processada vira um trace novo, desconectado da origem.
+</Callout>
+
+### Semantic Conventions — Nomes Padronizados
+
+Semantic conventions são os nomes de atributo padronizados pela especificação. Sem elas, cada time inventa sua própria variação (`path` vs `route` vs `url`) e a telemetria fica incomparável entre serviços e entre linguagens:
+
+<ComparisonTable
+  head={["Domínio", "Atributo padronizado", "Exemplo"]}
+  rows={[
+    ["HTTP", "<code>http.request.method</code>", "GET"],
+    ["HTTP", "<code>http.response.status_code</code>", "200"],
+    ["HTTP", "<code>http.route</code>", "/pedidos/{id}"],
+    ["Rede", "<code>server.address</code> / <code>server.port</code>", "pedidos-api.internal / 443"],
+    ["Banco de dados", "<code>db.system.name</code>", "postgresql"],
+    ["Recurso", "<code>service.name</code>", "pedidos-api"],
+    ["Recurso", "<code>deployment.environment</code>", "production"],
+  ]}
+/>
+
+## OpenTelemetry Collector
+
+### Por Que Usar um Collector
+
+Exportar direto da aplicação para o backend funciona, mas empurra para dentro do processo da app responsabilidades que não são dela:
+
+<CardGrid cols={2}>
+  <Card accent="#38bdf8" title="Desacopla app do backend">
+    A app só precisa falar OTLP com o Collector. Trocar Jaeger por Tempo, ou adicionar Datadog em paralelo, é mudar um arquivo YAML de infraestrutura — zero redeploy de código.
+  </Card>
+  <Card accent="#66bb6a" title="Batching & retry">
+    Agrupa spans/métricas antes de enviar, reduzindo o número de conexões ao backend. Segura uma fila em memória/disco se o backend cair, sem bloquear a aplicação.
+  </Card>
+  <Card accent="#fb923c" title="Sampling centralizado">
+    **Tail-based sampling** (decidir depois de ver o trace inteiro — "mantenha se deu erro ou foi lento") só é possível num ponto central que enxerga todos os spans de todos os serviços. Sampling feito só no SDK enxerga apenas o próprio serviço.
+  </Card>
+  <Card accent="#a78bfa" title="Transformação & higienização">
+    Adiciona/remove atributos, mascara PII antes de sair da rede interna, filtra ruído (health checks, `/metrics`). Feito uma vez no Collector, não em N aplicações.
+  </Card>
+</CardGrid>
+
+### Anatomia de um Pipeline (Receivers → Processors → Exporters)
+
+Um pipeline do Collector é sempre a mesma receita: **receivers** (como os dados entram), **processors** (o que acontece com eles no meio do caminho) e **exporters** (para onde saem) — amarrados em `service.pipelines`, um por sinal:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+  tail_sampling:
+    decision_wait: 10s
+    policies:
+      - name: mantem-erros
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: mantem-lentos
+        type: latency
+        latency:
+          threshold_ms: 500
+      - name: amostra-o-resto
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger-collector:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:9464
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+  datadog:
+    api:
+      key: ${env:DD_API_KEY}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, tail_sampling, batch]
+      exporters: [otlp/jaeger, datadog]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, datadog]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/loki, datadog]
+```
+
+<Callout type="info">
+**Ordem dos processors importa.** `memory_limiter` sempre primeiro (protege o processo de OOM), sampling no meio, `batch` sempre por último — ele deve rodar depois de qualquer processor que descarta dados (como o `tail_sampling`), senão você agrupa dados que vai jogar fora em seguida.
+</Callout>
+
+## Sinais — Maturidade de Traces, Métricas e Logs
+
+A especificação modela os três sinais com APIs distintas — e maturidade bem diferente entre eles, dependendo da linguagem:
+
+<ComparisonTable
+  head={["Sinal", "Modelo na API", "Maturidade típica", "Observação"]}
+  rows={[
+    ["<strong style='color:#38bdf8'>Traces</strong>", "<code>Tracer</code> → <code>Span</code> (pai/filho)", "<strong style='color:#66bb6a'>Stable</strong> — quase todas as linguagens", "Sinal fundador do projeto (fusão OpenTracing + OpenCensus). O mais maduro e mais usado em produção"],
+    ["<strong style='color:#a78bfa'>Métricas</strong>", "<code>Meter</code> → Counter / UpDownCounter / Histogram / Gauge", "<strong style='color:#66bb6a'>Stable</strong> — maioria das linguagens", "Cobre os mesmos tipos numéricos do modelo Prometheus"],
+    ["<strong style='color:#fbbf24'>Logs</strong>", "<code>Logger</code> → <code>LogRecord</code>, correlacionado a trace-id/span-id", "<strong style='color:#fbbf24'>Varia por linguagem</strong>", ".NET, Java, C++, PHP: Stable. Go, Rust: Beta. JavaScript, Python: ainda em Development"],
+  ]}
+/>
+
+<Callout type="info">
+Antes de adotar OTel para logs numa stack específica, confira a matriz oficial de status por linguagem — "Stable" no .NET não significa "Stable" em toda linguagem. Traces e métricas são aposta segura em qualquer linguagem madura do projeto; logs merecem uma checagem antes.
+</Callout>
+
+## Boas Práticas & Pegadinhas
+
+<Callout type="tip">
+**Instrumente desde o dia 1.** Fazer retrofit de OTel num sistema que já está em produção há anos é a pior hora — cada serviço precisa de deploy sob pressão, exatamente quando mais se precisa de visibilidade. Ligar a instrumentação automática custa poucas linhas; adiar custa uma madrugada de incidente às cegas.
+</Callout>
+
+<Callout type="tip">
+**Use o Collector, sempre.** Apontar o exporter OTLP direto para o backend a partir da aplicação parece mais simples no dia 1, mas acopla a app ao backend e joga fora batching, retry e sampling centralizados. Trate o Collector como peça de infraestrutura obrigatória, não como um "nice to have".
+</Callout>
+
+<Callout type="warn">
+**Cardinalidade e custo de sampling.** Atributo de alta cardinalidade (`user_id`, `order_id`) numa **métrica** multiplica o número de séries temporais e explode custo/memória do backend — mantenha esses valores em spans e logs, nunca como label de métrica. Em traces, capturar 100% do tráfego em produção de alto volume é caro; use sampling probabilístico no SDK ou tail-based no Collector, sempre preservando 100% dos erros e das requisições mais lentas.
+</Callout>
+
+<CardGrid cols={2}>
+  <Card accent="#818cf8" title="Resource attributes consistentes">
+    Todo serviço deve emitir `service.name`, `service.version` e `deployment.environment` do mesmo jeito. Sem isso, dashboards e correlação entre serviços quebram silenciosamente.
+  </Card>
+  <Card accent="#f87171" title="Versões do SDK em lockstep">
+    Pacotes de instrumentação e o SDK core evoluem juntos. Atualizar só um deles (por exemplo, só o exporter) é a causa mais comum de erro silencioso de build ou de telemetria que some sem exceção nenhuma.
+  </Card>
+</CardGrid>

@@ -1,0 +1,236 @@
+---
+title: "ELK & Loki"
+slug: elk-loki
+category: infra
+icon: "🔎"
+accent: "#eab308"
+description: "Agregação e busca de logs: a stack Elastic (Elasticsearch, Logstash, Kibana, Beats) e o Grafana Loki (indexado por labels, LogQL)."
+tags: [Elasticsearch, Kibana, Loki, Logs]
+order: 11
+updated: 2026-07-22
+---
+
+## ELK e Loki: duas filosofias de log
+
+Agregação de logs é o processo de coletar, centralizar e tornar buscável o volume de linhas geradas por dezenas — ou milhares — de serviços. No mercado, duas filosofias dominam essa tarefa, e elas resolvem o mesmo problema de formas opostas.
+
+<CardGrid cols={2}>
+  <Card accent="#eab308" pill="Full-text" title="ELK / Elastic Stack">
+    <strong>Elasticsearch</strong> indexa o documento inteiro: todo campo vira buscável, filtrável e agregável. É, na prática, um motor de busca (mesma raiz do Lucene) aplicado a logs — poderoso e caro.
+  </Card>
+  <Card accent="#38bdf8" pill="Labels" title="Grafana Loki">
+    Indexa só as <strong>labels</strong> — poucos metadados de baixa cardinalidade. O conteúdo da linha fica comprimido em object storage e só é lido no momento da query. Muito mais barato de operar.
+  </Card>
+</CardGrid>
+
+<Callout type="info">
+Não são inimigos. Muita empresa roda os dois: Loki pro volume alto de log de aplicação (barato, integrado ao Grafana) e Elasticsearch pra onde full-text rico ou compliance realmente importa (auditoria, segurança, busca ad-hoc complexa).
+</Callout>
+
+## Stack ELK / Elastic
+
+**ELK** é o acrônimo dos três projetos originais da Elastic que formam o pipeline clássico de log — hoje oficialmente chamado de **Elastic Stack** (o "B" de Beats entrou depois). Cada peça resolve uma etapa da cadeia.
+
+### Elasticsearch: o motor de busca full-text
+
+Elasticsearch guarda documentos JSON e os torna buscáveis quase em tempo real através de um **índice invertido**: para cada termo (token) que aparece nos logs, ele mantém uma lista dos documentos que contêm aquele termo. Buscar "timeout" não significa escanear todo log — é um lookup direto termo → lista de documentos. Esse processo de quebrar texto em tokens (**analysis**) roda tanto na indexação quanto na busca, com o mesmo analisador — senão os tokens não batem e a busca simplesmente não encontra nada.
+
+Um documento de log típico, no formato do Elastic Common Schema (ECS):
+
+```json
+{
+  "@timestamp": "2026-07-22T14:03:11.482Z",
+  "log.level": "error",
+  "service.name": "pedidos-api",
+  "trace.id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "event.dataset": "pedidos-api.log",
+  "http.response.status_code": 500,
+  "message": "falha ao debitar estoque: timeout no servico de estoque",
+  "order.id": "PED-1234"
+}
+```
+
+Pra escalar horizontalmente, um índice é dividido em **shards** — cada shard é um índice Lucene independente, distribuído entre os nós do cluster e buscável em paralelo. **Replicas** são cópias de cada shard primária: dão alta disponibilidade (sobrevivem à perda de um nó) e capacidade extra de leitura.
+
+```text
+# 3 shards primarias + 1 replica de cada = 6 shards no total, espalhados pelo cluster
+PUT /logs-pedidos-api-2026.07.22
+{
+  "settings": { "number_of_shards": 3, "number_of_replicas": 1 }
+}
+```
+
+<Callout type="tip">
+Um índice novo por dia (`logs-pedidos-api-2026.07.22`) é o padrão do mercado: facilita aplicar retenção — apagar índices inteiros antigos é muito mais barato que apagar documento por documento — e mantém cada shard num tamanho gerenciável.
+</Callout>
+
+### Logstash: pipeline de ingestão
+
+Logstash processa eventos em três estágios sequenciais: **input** (recebe — beats, kafka, arquivo, tcp), **filter** (transforma) e **output** (envia — Elasticsearch, Loki, Kafka, stdout). O filtro mais característico é o **grok**: casa a linha de log contra um padrão nomeado (um conjunto de regex por trás) e extrai campos de um texto originalmente não-estruturado.
+
+```ruby
+input {
+  beats {
+    port => 5044                  # recebe eventos encaminhados pelo Filebeat
+  }
+}
+
+filter {
+  grok {
+    # extrai method, path, status, bytes etc. de uma linha estilo Apache/Nginx
+    match => { "message" => "%{COMBINEDAPACHELOG}" }
+  }
+  geoip {
+    source => "clientip"          # enriquece com pais/cidade a partir do IP
+  }
+  mutate {
+    remove_field => ["message"]   # descarta o texto bruto depois de parseado
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => ["http://es01:9200"]
+    index => "logs-webapp-%{+YYYY.MM.dd}"
+  }
+}
+```
+
+Logstash roda em uma JVM e pesa mais que os Beats — por isso é comum reservá-lo pra transformações que realmente precisam dele (grok, enrich, roteamento condicional) e pular direto Filebeat → Elasticsearch quando o log já nasce estruturado.
+
+### Kibana: busca e dashboards
+
+Kibana é a camada de visualização da stack: **Discover** pra busca ad-hoc (com KQL, a Kibana Query Language — uma sintaxe simplificada traduzida internamente pra Query DSL), **Dashboards** com painéis reutilizáveis, **Dev Tools** com um console pra falar Query DSL puro (JSON) direto com o Elasticsearch, e **Alerting** pra regras sobre os dados indexados.
+
+### Beats e Filebeat: coleta na origem
+
+**Beats** é a família de coletores leves da Elastic, escritos em Go — sem JVM, baixo consumo de memória: **Filebeat** (arquivos de log), **Metricbeat** (métricas de sistema/serviço), **Packetbeat** (tráfego de rede), **Winlogbeat** (event log do Windows). O Filebeat acompanha arquivos (tail), lida com multiline (stack traces contando como uma única entrada) e tem backpressure — não afoga o Logstash ou o Elasticsearch se eles engasgarem.
+
+```yaml
+filebeat.inputs:
+  - type: log
+    paths:
+      - /var/log/pedidos-api/*.log
+    fields:
+      service: pedidos-api
+
+output.logstash:
+  hosts: ["logstash:5044"]
+```
+
+## Grafana Loki: logs indexados por labels
+
+Loki é descrito pelo próprio Grafana Labs como **"Prometheus para logs"**: mesmo modelo mental de labels, mesma filosofia horizontally-scalable e multi-tenant — e, a diferença que importa, sem indexação full-text do conteúdo da linha. Loki indexa só a combinação de labels (ex.: `{app="pedidos-api", env="prod"}`), que define uma **stream**. O conteúdo de cada stream é comprimido em **chunks** guardados em object storage (S3, GCS, filesystem) — muito mais barato de reter por longos períodos.
+
+Na hora da query, o Loki primeiro localiza as streams pelas labels (índice pequeno e rápido) e só então faz o equivalente a um grep/regex nos chunks já filtrados — a parte cara da busca roda sobre um subconjunto pequeno dos dados, não sobre a base inteira.
+
+**LogQL** é a linguagem de query: um seletor de stream `{...}` seguido de um pipeline opcional de filtros e parsers.
+
+```logql
+# streams do namespace loki-dev, filtro de texto, parse logfmt, filtro por campo extraido
+{container="query-frontend", namespace="loki-dev"} |= "metrics.go" | logfmt | duration > 10s
+
+# metric query: taxa de linhas de erro por segundo nos ultimos 5 minutos, por ambiente
+sum(rate({app="pedidos-api"} |= "ERROR" [5m])) by (env)
+```
+
+### Promtail e agentes: coleta pro Loki
+
+**Promtail** (o agente clássico do Loki — hoje convergindo pro Grafana Alloy) descobre arquivos, anexa labels e roda **pipeline stages** que parseiam a linha antes de enviar. A diferença crítica em relação ao Filebeat: aqui você decide explicitamente quais campos extraídos viram **labels** (indexados) e quais ficam só no corpo da linha.
+
+```yaml
+scrape_configs:
+  - job_name: pedidos-api
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: pedidos-api
+          __path__: /var/log/pedidos-api/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            trace_id: trace_id
+      - labels:
+          level:              # so campo de baixa cardinalidade vira label
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+```
+
+Loki nasceu pra viver dentro do Grafana — a mesma UI (Explore) que já mostra métricas do Prometheus e traces do Tempo mostra os logs, com **exemplars** e **derived fields** linkando um `trace_id` do log direto pro trace correspondente. É essa integração nativa, mais que o LogQL em si, que puxa quem já usa Prometheus/Grafana pra escolher Loki.
+
+## Structured Logging e Correlação por trace_id
+
+Log de texto solto (algo como "erro ao processar pedido 1234") funciona pra leitura humana, mas quebra agregação: não dá pra filtrar "só os pedidos com status 500" ou calcular duração média sem um campo dedicado pra isso. **Structured logging** — JSON ou `logfmt` (chave=valor) — resolve o problema nos dois mundos, mas de formas diferentes:
+
+- No **Elasticsearch**, cada campo estruturado vira um campo mapeado, tipado e agregável nativamente — é a diferença entre só buscar texto e realmente cruzar dados (`avg(duration) where status=500`).
+- No **Loki**, o conteúdo nunca é indexado — então parsear em campos (`| json`, `| logfmt`) acontece na hora da query, sobre os chunks já filtrados por label. Não é de graça, mas é ordens de magnitude mais barato que um filtro `|~ ".*regex.*"` livre sobre tudo.
+
+```text
+level=error msg="falha ao debitar estoque" service=pedidos-api trace_id=4bf92f3577b34da6a3ce929d0e0e4736 order_id=PED-1234
+```
+
+O campo que mais paga dividendo é o `trace_id` (idealmente propagado via OpenTelemetry/W3C traceparent através de todos os serviços). Com ele, um pico de latência visto no Tempo vira um `trace_id`; esse mesmo id filtra direto no Kibana ou no Loki e traz toda linha de log — de todo serviço — que tocou aquela requisição específica. Sem isso, correlacionar logs distribuídos só por timestamp é adivinhação.
+
+## Fluxo de Ingestão: do App ao Dashboard
+
+O formato do pipeline é o mesmo nos dois mundos — só o meio do caminho muda. As duas etapas de armazenamento aparecem lado a lado abaixo porque, na prática, você escolhe uma delas (ou roda as duas, para dados diferentes).
+
+<FlowDiagram
+  title="INGESTAO DE LOGS - DA APLICACAO AO DASHBOARD"
+  rows={[
+    { box: "Aplicação (log estruturado + trace_id)", color: "#818cf8", note: "JSON ou logfmt, correlacionado por trace_id", tip: "O log estruturado é o contrato entre a aplicação e todo o resto do pipeline" },
+    { box: "Coletor — Filebeat / Promtail", color: "#34d399", indent: 1, note: "agente leve rodando ao lado da aplicação", tip: "Filebeat só encaminha; Promtail também anexa labels e roda pipeline stages" },
+    { box: "Logstash (opcional)", color: "#fb923c", indent: 2, note: "grok, enrich, roteamento condicional", tip: "Só existe no caminho ELK — a maioria dos setups Loki pula direto pro store" },
+    { box: "Elasticsearch (índice invertido)", color: "#eab308", indent: 2, note: "guarda o documento inteiro, indexa todo campo", tip: "Escala por shards — cada shard é buscável em paralelo nos nós do cluster" },
+    { box: "Loki (índice de labels + chunks)", color: "#38bdf8", indent: 2, note: "só as labels vão pro índice; conteúdo vira chunk em object storage", tip: "Muito mais barato — o texto da linha nunca é indexado, só comprimido" },
+    { box: "UI — Kibana / Grafana", color: "#f472b6", indent: 1, note: "Query DSL/KQL ou LogQL, dashboards e alertas", tip: "No Grafana, o mesmo painel ainda correlaciona com métricas do Prometheus e traces do Tempo" },
+  ]}
+/>
+
+## ELK vs Loki: qual usar quando
+
+Resumindo lado a lado os pontos que mais pesam na decisão:
+
+<ComparisonTable
+  head={["Critério", "ELK / Elasticsearch", "Grafana Loki"]}
+  rows={[
+    ["Indexação", "<strong style='color:#eab308'>Full-text</strong> — todo campo do documento", "<strong style='color:#38bdf8'>Só labels</strong> — conteúdo não é indexado"],
+    ["Custo de armazenamento", "Alto — o índice cresce junto com o volume de log", "Baixo — object storage barato + índice pequeno"],
+    ["Escala / operação", "Cluster com estado (JVM, heap, shards pra gerenciar)", "Componentes simples na frente de object storage"],
+    ["Linguagem de busca", "<code>Query DSL</code> (JSON) ou KQL no Kibana", "<code>LogQL</code> — sintaxe parecida com PromQL"],
+    ["Ecossistema", "Kibana, Beats, Logstash, X-Pack (security/alerting)", "Grafana, Prometheus, Tempo, Promtail/Alloy"],
+    ["Melhor encaixe", "Full-text rico, auditoria/compliance, busca ad-hoc complexa", "Alto volume de log de app, observability unificada"],
+  ]}
+/>
+
+## Boas Práticas e Pegadinhas
+
+<Callout type="warn">
+**Cardinalidade é a armadilha nº 1 do Loki.** Nunca transforme campos de alta cardinalidade (`user_id`, `request_id`, IP) em labels — cada combinação única vira uma stream nova, e streams demais explodem memória e deixam o Loki lento (o mesmo anti-padrão de cardinalidade do Prometheus). Deixe labels pra um conjunto pequeno e estável (`service`, `env`, `level`) e resolva o resto com `| json` ou `| logfmt` na hora da query.
+</Callout>
+
+<Callout type="warn">
+**Retenção é o custo oculto do Elasticsearch.** Indexar tudo pra sempre não escala — heap, disco e número de shards crescem junto. Use **ILM** (Index Lifecycle Management) com tiers hot → warm → cold → delete, um índice novo por rotação, e desative a indexação (`"index": false`) em campos que você nunca vai buscar.
+</Callout>
+
+<Callout type="warn">
+**Nunca logue PII.** Senha, token, cartão, CPF — tanto o índice do Elasticsearch quanto os chunks do Loki são replicados e retidos por semanas ou meses. Mascare no ponto de origem (na instrumentação) ou nunca capture; use o `trace_id` pra correlacionar sem precisar expor o dado sensível em si.
+</Callout>
+
+Mais alguns pontos que só se aprende operando os dois em produção:
+
+<CardGrid cols={2}>
+  <Card accent="#66bb6a" title="Shard sizing no Elasticsearch">
+    Shard pequeno demais desperdiça overhead (cada um custa memória e handles de arquivo); shard gigante fica lento pra realocar. Regra prática: manter cada shard entre poucos GB e uns 50GB.
+  </Card>
+  <Card accent="#a78bfa" title="Logstash como gargalo">
+    Pipeline com grok pesado numa JVM subdimensionada vira o ponto lento da cadeia inteira. Pra logs que já nascem estruturados, considere pular o Logstash e ir direto Beats/Promtail → store.
+  </Card>
+  <Card accent="#fbbf24" title="Multi-tenant no Loki">
+    O header <code>X-Scope-OrgID</code> isola tenants dentro do mesmo Loki — útil pra separar times ou produtos sem subir um cluster por equipe.
+  </Card>
+  <Card accent="#f87171" title="Amostragem também vale pra log">
+    Log de debug em produção, 100% do tempo, é volume que ninguém lê. Amostre ou suba o nível só sob demanda (feature flag / log dinâmico) em vez de pagar o custo o tempo todo.
+  </Card>
+</CardGrid>
