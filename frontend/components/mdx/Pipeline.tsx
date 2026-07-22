@@ -1,4 +1,4 @@
-type Step = { label: string; note?: string; kind?: "req" | "res" | "step" };
+type Step = { label: string; note?: string; kind?: "req" | "res" | "step"; tip?: string };
 const BORDER = { req: "border-[#38bdf8]", res: "border-[#66bb6a]", step: "border-border" };
 export function Pipeline({ steps, caption }: { steps: Step[]; caption?: string }) {
   return (
@@ -6,7 +6,10 @@ export function Pipeline({ steps, caption }: { steps: Step[]; caption?: string }
       <div className="flex flex-wrap items-center gap-0 rounded-2xl border border-border bg-surface p-6">
         {steps.map((s, i) => (
           <div key={i} className="flex items-center">
-            <div className={`min-w-28 rounded-xl border bg-surface2 px-3 py-4 text-center ${BORDER[s.kind ?? "step"]}`}>
+            <div
+              className={`min-w-28 rounded-xl border bg-surface2 px-3 py-4 text-center ${BORDER[s.kind ?? "step"]}${s.tip ? " cursor-help" : ""}`}
+              title={s.tip}
+            >
               <div className="text-sm font-bold">{s.label}</div>
               {s.note && <div className="text-xs text-muted">{s.note}</div>}
             </div>
