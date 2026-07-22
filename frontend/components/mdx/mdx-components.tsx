@@ -1,4 +1,6 @@
 import type { MDXComponents } from "mdx/types";
+import { Callout } from "./Callout";
+import { Pill } from "./Pill";
 
 // Real components added in Tasks 4-7. Start with element styling.
 export const mdxComponents: MDXComponents = {
@@ -10,4 +12,6 @@ export const mdxComponents: MDXComponents = {
   table: (p) => <div className="my-6 overflow-x-auto"><table className="w-full border-collapse text-sm" {...p} /></div>,
   th: (p) => <th className="border-b border-border bg-surface2 px-4 py-3 text-left text-xs uppercase tracking-wide text-muted" {...p} />,
   td: (p) => <td className="border-b border-border px-4 py-3" {...p} />,
+  Callout,
+  Pill,
 };
