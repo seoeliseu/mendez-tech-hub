@@ -143,6 +143,75 @@ Lê o S3 como stream, processa em lotes e descarta cada lote:
 **Fargate, não Lambda.** O AWS Lambda tem teto de **15 min** de execução — o SLA é 20 min. Rode o worker em **ECS Fargate** (roda o tempo que precisar). Se quiser Lambda, **particione** o arquivo (Step Functions Map) em pedaços que rodem em &lt; 15 min cada, em paralelo.
 </Callout>
 
+## Escalar o processamento — paralelismo e multi-worker
+
+<Callout type="info">
+**Antes de escalar: você precisa?** 1M linhas / 20min = **833 linhas/s**; um worker faz em **~2–5 min**. Paralelismo aqui é **folga/segurança**, não requisito. Vira necessário com arquivos de 10M–100M linhas, SLA menor, ou muitos uploads simultâneos.
+</Callout>
+
+### Nível 1 — dentro de 1 worker: parse serial, insert paralelo
+
+Ler o stream é serial e barato. Distribui os lotes de 10k pra um **pool de N gravadores** que fazem `COPY` em paralelo — sobrepõe o parse com o I/O do banco.
+
+```csharp
+// 1 leitor enche o canal; N gravadores fazem bulk COPY ao mesmo tempo
+var canal = Channel.CreateBounded<List<Linha>>(N * 2);
+
+// produtor: parse em streaming -> canal.Writer.WriteAsync(lote)
+// consumidores: N tarefas lendo o mesmo canal em paralelo
+await Parallel.ForEachAsync(
+    canal.Reader.ReadAllAsync(),
+    new ParallelOptions { MaxDegreeOfParallelism = N },   // N = 4..8, nao 100
+    async (lote, _) => await BulkInsertAsync(lote));
+```
+
+<Callout type="warn">
+**Não estoure o banco.** N `COPY` simultâneos disputam conexão/lock/IO do Aurora. Ajuste N à capacidade do *writer* (tipicamente **4–8**), não ao número de CPUs. Passou disso → contenção, e fica mais lento em vez de mais rápido.
+</Callout>
+
+### Nível 2 — dividir 1 arquivo entre M workers (scatter-gather)
+
+O orquestrador fatia o arquivo em M faixas, enfileira M mensagens, M workers processam em paralelo, e o job fecha quando as M partes terminam:
+
+<FlowDiagram
+  title="SCATTER-GATHER — 1 ARQUIVO, M WORKERS EM PARALELO"
+  rows={[
+    { box: "Orquestrador — fatia o arquivo", color: "#a78bfa", tip: "Passa 1x contando quebras de linha e calcula M faixas alinhadas a fim de linha" },
+    { box: "SQS — M mensagens", color: "#f472b6", indent: 1, tip: "Uma msg por pedaco: jobId + numero da parte + faixa de linhas/bytes" },
+    { box: "Worker 1 — faixa 1", color: "#66bb6a", indent: 2, tip: "Ranged GET (Range: bytes=) so da sua fatia no S3 + bulk COPY. Nao le o arquivo inteiro" },
+    { box: "Worker 2 — faixa 2", color: "#66bb6a", indent: 2, tip: "Roda ao mesmo tempo que os outros; cada um cuida so da sua faixa" },
+    { box: "Worker M — faixa M", color: "#66bb6a", indent: 2, tip: "M workers juntos = tempo total / M, ate bater no teto de escrita do banco" },
+    { box: "Contador de partes -> done", color: "#fbbf24", indent: 3, tip: "job = done quando as M partes deram ack. Se uma falha, so ela reprocessa (idempotente por parte)" },
+  ]}
+/>
+
+O pega do CSV: linha tem tamanho variável, então **não dá pra cortar no byte N** (corta no meio da linha). Alinhe as faixas ao **fim de linha** — conte os `\n` numa passada — ou use **AWS Glue (Spark)**, que já divide formatos splitáveis sozinho.
+
+### Nível 3 — vários arquivos ao mesmo tempo
+
+Aqui não precisa fatiar nada: SQS + N workers, **cada mensagem (= 1 arquivo) vai pra 1 worker**. 100 uploads → 100 msgs → N workers processam N arquivos em paralelo. A própria fila distribui, sem coordenação.
+
+### Onde rodar — Fargate vs Kubernetes
+
+O worker é só um container consumindo SQS, então a camada de compute é **trocável sem mexer no resto**:
+
+<ComparisonTable
+  head={["Aspecto", "ECS Fargate (atual)", "EKS / Kubernetes"]}
+  rows={[
+    ["O que é", "containers <strong>serverless</strong>; a AWS provisiona CPU/RAM", "cluster K8s; worker = <code>Deployment</code> com N réplicas"],
+    ["Autoscale pela fila", "ECS Service Auto Scaling na profundidade da SQS", "<strong style='color:#66bb6a'>KEDA</strong> (SQS scaler): pods <code>0→N</code> por msgs na fila"],
+    ["Operação", "zero infra — não há cluster/nó pra cuidar", "você opera o cluster (ou Fargate-on-EKS pra tirar os nós)"],
+    ["Portabilidade", "AWS-only", "multi-cloud, ecossistema K8s inteiro"],
+    ["Quando usar", "default — simples e barato", "já tem K8s, ou quer controle fino/portabilidade"],
+  ]}
+/>
+
+Nos dois: **mesmo código de worker, mesma fila SQS** — cada mensagem vai pra um consumidor só. K8s escala os pods; Fargate escala as tasks. A fila é o que torna o compute plugável.
+
+<Callout type="warn">
+**O teto que ninguém vê: o writer.** Escalar workers **não** escala a escrita pra sempre — todos gravam no **mesmo primary** do Aurora (1 writer). Muitos `COPY` paralelos batem no limite de conexão/IO do banco. Escala real de **escrita** = particionar/shardar o banco; **leitura** escala com réplicas. Acima de certo ponto, botar mais worker não acelera — o gargalo migra pro banco.
+</Callout>
+
 ## Gravar e ler o arquivo grande
 
 Os cuidados que o problema pede:

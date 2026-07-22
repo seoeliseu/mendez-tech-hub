@@ -2153,6 +2153,22 @@
     ]
   },
   {
+    "id": "case-planilha-1m#escalar-o-processamento-paralelismo-e-multi-worker",
+    "slug": "case-planilha-1m",
+    "title": "Case 1 — Planilha de 1M linhas em 20 min",
+    "category": "infra",
+    "section": "Escalar o processamento — paralelismo e multi-worker",
+    "anchor": "escalar-o-processamento-paralelismo-e-multi-worker",
+    "text": "Antes de escalar: você precisa? 1M linhas / 20min = 833 linhas/s ; um worker faz em ~2–5 min . Paralelismo aqui é folga/segurança , não requisito. Vira necessário com arquivos de 10M–100M linhas, SLA menor, ou muitos uploads simultâneos. Nível 1 — dentro de 1 worker: parse serial, insert paralelo Ler o stream é serial e barato. Distribui os lotes de 10k pra um pool de N gravadores que fazem COPY em paralelo — sobrepõe o parse com o I/O do banco. csharp // 1 leitor enche o canal; N gravadores fazem bulk COPY ao mesmo tempo var canal = Channel.CreateBounded (N 2); // produtor: parse em streaming canal.Writer.WriteAsync(lote) // consumidores: N tarefas lendo o mesmo canal em paralelo await Parallel.ForEachAsync( canal.Reader.ReadAllAsync(), new ParallelOptions { MaxDegreeOfParallelism = N }, // N = 4..8, nao 100 async (lote, ) = await BulkInsertAsync(lote)); Não estoure o banco. N COPY simultâneos disputam conexão/lock/IO do Aurora. Ajuste N à capacidade do writer (tipicamente 4–8 ), não ao número de CPUs. Passou disso → contenção, e fica mais lento em vez de mais rápido. Nível 2 — dividir 1 arquivo entre M workers (scatter gather) O orquestrador fatia o arquivo em M faixas, enfileira M mensagens, M workers processam em paralelo, e o job fecha quando as M partes terminam: done\", color: \" fbbf24\", indent: 3, tip: \"job = done quando as M partes deram ack. Se uma falha, so ela reprocessa (idempotente por parte)\" }, ]} / O pega do CSV: linha tem tamanho variável, então não dá pra cortar no byte N (corta no meio da linha). Alinhe as faixas ao fim de linha — conte os \\n numa passada — ou use AWS Glue (Spark) , que já divide formatos splitáveis sozinho. Nível 3 — vários arquivos ao mesmo tempo Aqui não precisa fatiar nada: SQS + N workers, cada mensagem (= 1 arquivo) vai pra 1 worker . 100 uploads → 100 msgs → N workers processam N arquivos em paralelo. A própria fila distribui, sem coordenação. Onde rodar — Fargate vs Kubernetes O worker é só um container consumindo SQS, então a camada de compute é trocável sem mexer no resto : serverless ; a AWS provisiona CPU/RAM\", \"cluster K8s; worker = Deployment com N réplicas\"], [\"Autoscale pela fila\", \"ECS Service Auto Scaling na profundidade da SQS\", \" KEDA (SQS scaler): pods 0→N por msgs na fila\"], [\"Operação\", \"zero infra — não há cluster/nó pra cuidar\", \"você opera o cluster (ou Fargate on EKS pra tirar os nós)\"], [\"Portabilidade\", \"AWS only\", \"multi cloud, ecossistema K8s inteiro\"], [\"Quando usar\", \"default — simples e barato\", \"já tem K8s, ou quer controle fino/portabilidade\"], ]} / Nos dois: mesmo código de worker, mesma fila SQS — cada mensagem vai pra um consumidor só. K8s escala os pods; Fargate escala as tasks. A fila é o que torna o compute plugável. O teto que ninguém vê: o writer. Escalar workers não escala a escrita pra sempre — todos gravam no mesmo primary do Aurora (1 writer). Muitos COPY paralelos batem no limite de conexão/IO do banco. Escala real de escrita = particionar/shardar o banco; leitura escala com réplicas. Acima de certo ponto, botar mais worker não acelera — o gargalo migra pro banco.",
+    "tags": [
+      "AWS",
+      "S3",
+      "SQS",
+      "Fargate",
+      "k6"
+    ]
+  },
+  {
     "id": "case-planilha-1m#gravar-e-ler-o-arquivo-grande",
     "slug": "case-planilha-1m",
     "title": "Case 1 — Planilha de 1M linhas em 20 min",
