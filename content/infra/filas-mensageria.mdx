@@ -1,0 +1,327 @@
+---
+title: "Filas & Mensageria"
+slug: filas-mensageria
+category: infra
+icon: "📨"
+accent: "#fb923c"
+description: "Apache Kafka, RabbitMQ, SQS/SNS — padrões Pub/Sub, Dead Letter Queue e garantias de entrega."
+tags: [Kafka, RabbitMQ, Pub/Sub, DLQ]
+order: 3
+updated: 2026-07-22
+---
+
+## Fundamentos de Mensageria
+
+Mensageria é a troca assíncrona de informações via **mensagens** através de um intermediário (broker), desacoplando produtores de consumidores no tempo e no espaço.
+
+### Componentes
+
+<CardGrid cols={3}>
+
+<Card accent="#fb923c" title="Producer">
+Publica mensagens. Não sabe quem consome nem quando. Só conhece o broker.
+</Card>
+
+<Card accent="#fb923c" title="Broker">
+Recebe, armazena e entrega mensagens. Ex: Kafka, RabbitMQ, SQS.
+</Card>
+
+<Card accent="#fb923c" title="Consumer">
+Lê mensagens. Pull-based (Kafka) ou push-based (RabbitMQ).
+</Card>
+
+<Card accent="#fb923c" title="Queue">
+Canal ponto-a-ponto. Cada mensagem vai para **um único** consumer.
+</Card>
+
+<Card accent="#fb923c" title="Topic">
+Canal de broadcast. Múltiplos consumers recebem a **mesma** mensagem.
+</Card>
+
+<Card accent="#fb923c" title="Consumer Group">
+Consumers que dividem partições de um tópico. Cada partição → 1 membro.
+</Card>
+
+</CardGrid>
+
+### Síncrono vs Assíncrono
+
+<Pipeline
+  steps={[
+    { label: "Service A", note: "chamada HTTP", kind: "req" },
+    { label: "Service B", note: "resposta imediata", kind: "res" },
+  ]}
+  caption="SÍNCRONO — caller bloqueia até resposta"
+/>
+
+<Pipeline
+  steps={[
+    { label: "Service A", note: "ack rápido", kind: "req" },
+    { label: "[Broker]", note: "persiste", kind: "step" },
+    { label: "Service B", note: "quando disponível", kind: "res" },
+  ]}
+  caption="ASSÍNCRONO — caller não bloqueia (publish → broker → deliver)"
+/>
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="✅ Benefícios">
+- **Desacoplamento:** serviços evoluem independentemente
+- **Resiliência:** mensagens sobrevivem a falhas temporárias
+- **Escalabilidade:** consumers escalam horizontalmente
+- **Buffer:** absorve picos sem derrubar consumers
+- **Replay:** reprocessar eventos históricos (Kafka)
+</Card>
+
+<Card accent="#f87171" title="⚠️ Trade-offs">
+- Eventual consistency — sem resposta imediata
+- Debugging mais complexo (fluxo assíncrono)
+- Ordenação estrita é difícil de garantir
+- Consumers precisam ser idempotentes
+- Infraestrutura extra para operar
+</Card>
+
+</CardGrid>
+
+<Callout type="info">
+Use mensageria quando a operação pode ser diferida e o caller não precisa da resposta imediatamente. Para leitura de dados ou transações síncronas, REST/gRPC ainda é a escolha certa.
+</Callout>
+
+## Principais Ferramentas
+
+Cada broker tem trade-offs distintos de throughput, latência, ordenação e complexidade operacional.
+
+<CardGrid cols={2}>
+
+<Card accent="#a78bfa" title="🟠 Apache Kafka">
+**Log distribuído imutável e particionado.** Altíssimo throughput (milhões msg/s). Dados persistem por tempo configurável — ideal para event streaming.
+
+- Partições permitem paralelismo controlado
+- Consumer groups para balanceamento
+- Offsets → replay de eventos históricos
+- Retenção configurável: horas, dias, infinito
+- Kafka Streams para processamento em stream
+- Schema Registry para versionamento de eventos
+</Card>
+
+<Card accent="#38bdf8" title="🐰 RabbitMQ">
+**Message broker AMQP** com roteamento flexível. Ideal para work queues e routing complexo.
+
+- Exchanges: Direct, Topic, Fanout, Headers
+- Roteamento por routing key + binding
+- Push-based (broker empurra ao consumer)
+- Ack/Nack por mensagem individual
+- TTL, DLX (Dead Letter Exchange) nativos
+- Plugin de streams (RabbitMQ 3.9+)
+</Card>
+
+<Card accent="#fb923c" title="☁️ AWS SQS / SNS">
+**Serviços gerenciados AWS.** SQS ponto-a-ponto, SNS fan-out. Zero operação.
+
+- SQS Standard: throughput ilimitado, sem ordem
+- SQS FIFO: ordem estrita, ~3k msg/s por shard
+- Visibility Timeout: previne duplo processamento
+- SNS → múltiplas filas SQS (fan-out)
+- DLQ nativo configurável no console
+</Card>
+
+<Card accent="#66bb6a" title="⚡ Redis Streams">
+**Stream nativo do Redis.** Ideal quando Redis já está na stack e volume não justifica Kafka.
+
+- XADD / XREAD para produzir e consumir
+- Consumer groups similar ao Kafka
+- IDs baseados em timestamp (ordem natural)
+- XACK para confirmar processamento
+- MAXLEN para limitar retenção por tamanho
+</Card>
+
+</CardGrid>
+
+### Comparativo
+
+<ComparisonTable
+  head={["Critério", "Kafka", "RabbitMQ", "SQS Standard", "SQS FIFO"]}
+  rows={[
+    ["<strong>Throughput</strong>", "<strong style='color:#66bb6a'>Muito alto</strong>", "<strong style='color:#fbbf24'>~50k/s</strong>", "<strong style='color:#66bb6a'>Muito alto</strong>", "<strong style='color:#fbbf24'>~3k/s por shard</strong>"],
+    ["<strong>Ordenação</strong>", "<strong style='color:#fbbf24'>Por partição</strong>", "<strong style='color:#fbbf24'>Por fila</strong>", "<strong style='color:#f87171'>Sem garantia</strong>", "<strong style='color:#66bb6a'>Estrita por grupo</strong>"],
+    ["<strong>Retenção</strong>", "<strong style='color:#66bb6a'>Configurável (forever)</strong>", "<strong style='color:#f87171'>Até consumir (TTL)</strong>", "<strong style='color:#fbbf24'>Até 14 dias</strong>", "<strong style='color:#fbbf24'>Até 14 dias</strong>"],
+    ["<strong>Replay</strong>", "<strong style='color:#66bb6a'>Sim (offset reset)</strong>", "<strong style='color:#f87171'>Não</strong>", "<strong style='color:#f87171'>Não</strong>", "<strong style='color:#f87171'>Não</strong>"],
+    ["<strong>Roteamento</strong>", "<strong style='color:#fbbf24'>Por tópico/partição</strong>", "<strong style='color:#66bb6a'>Flexível (exchanges)</strong>", "<strong style='color:#f87171'>Simples</strong>", "<strong style='color:#f87171'>Simples</strong>"],
+    ["<strong>Operação</strong>", "<strong style='color:#f87171'>Complexa</strong>", "<strong style='color:#fbbf24'>Moderada</strong>", "<strong style='color:#66bb6a'>Gerenciada</strong>", "<strong style='color:#66bb6a'>Gerenciada</strong>"],
+  ]}
+/>
+
+### Kafka — Anatomia Interna
+
+<FlowDiagram
+  title='Topic "pedidos" — 3 partições, replication factor 2'
+  rows={[
+    { box: "Partition 0", color: "#38bdf8", note: "[off:0][off:1][off:2][off:3] → append-only log" },
+    { box: "Partition 1", color: "#38bdf8", note: "[off:0][off:1][off:2] → append-only log" },
+    { box: "Partition 2", color: "#38bdf8", note: "[off:0][off:1][off:2][off:3] → append-only log" },
+    { box: 'Consumer Group "processamento"' },
+    { box: "Consumer A", color: "#fb923c", indent: 1, note: "← Partition 0" },
+    { box: "Consumer B", color: "#fb923c", indent: 1, note: "← Partition 1" },
+    { box: "Consumer C", color: "#fb923c", indent: 1, note: "← Partition 2" },
+    { box: 'Consumer Group "analytics"', note: "lê independentemente, mesmos dados" },
+    { box: "Consumer D", color: "#fb923c", indent: 1, note: "← Partition 0, 1, 2" },
+  ]}
+/>
+
+### RabbitMQ — Exchanges
+
+<FlowDiagram
+  title="RabbitMQ — Exchanges"
+  rows={[
+    { box: "Producer", color: "#fb923c", note: 'routing key exata: ──"error"──►' },
+    { box: "Direct Exchange", color: "#38bdf8", indent: 1 },
+    { box: 'Queue "errors"', indent: 2 },
+    { box: "Producer", color: "#fb923c", note: 'wildcards (* = 1 palavra, # = 0+ palavras): ──"order.created.br"──►' },
+    { box: "Topic Exchange", color: "#38bdf8", indent: 1 },
+    { box: 'Queue "order.*"', indent: 2, note: "✓" },
+    { box: 'Queue "*.created.#"', indent: 2, note: "✓" },
+    { box: "Producer", color: "#fb923c", note: "broadcast para todas as filas vinculadas" },
+    { box: "Fanout Exchange", color: "#38bdf8", indent: 1 },
+    { box: "Queue billing", indent: 2, note: "✓" },
+    { box: "Queue inventory", indent: 2, note: "✓" },
+    { box: "Queue notify", indent: 2, note: "✓" },
+  ]}
+/>
+
+## Padrões de Mensageria
+
+<CardGrid cols={2}>
+
+<Card accent="#fb923c" title="📬 Point-to-Point">
+Cada mensagem processada por **exatamente um** consumer. Distribui trabalho em paralelo.
+
+- Load balancing automático entre consumers
+- Mensagem removida após ack bem-sucedido
+- Escala adicionando mais consumers
+</Card>
+
+<Card accent="#fb923c" title="📡 Publish / Subscribe">
+Cada mensagem entregue a **todos** os subscribers. Broadcast de eventos de domínio.
+
+- Consumer groups independentes (Kafka)
+- Fanout Exchange (RabbitMQ)
+- SNS → múltiplas filas SQS (AWS)
+</Card>
+
+<Card accent="#fb923c" title="💀 Dead Letter Queue">
+Fila que recebe mensagens que falharam após N tentativas. Previne perda silenciosa.
+
+- Alertas na DLQ indicam bug no consumer
+- Reprocessamento manual ou automático
+- Suporta investigação post-mortem
+</Card>
+
+<Card accent="#fb923c" title="🏃 Competing Consumers">
+N consumers competem pela mesma fila — escala horizontal natural.
+
+- N consumers processam N mensagens em paralelo
+- Novo consumer entra automaticamente na pool
+- Cuidado com operações order-sensitive
+</Card>
+
+<Card accent="#fb923c" title="📤 Outbox Pattern">
+Garante atomicidade entre salvar no banco **e** publicar mensagem, sem 2PC.
+
+- Salva evento na tabela outbox na mesma TX
+- Processo separado publica outbox → broker
+- Elimina dual-write problem
+</Card>
+
+<Card accent="#fb923c" title="📦 Event Notification">
+Mensagem mínima (só IDs) notifica que algo aconteceu. Consumer busca detalhes via API.
+
+- Payload leve, sem dados sensíveis no broker
+- Consumer usa API para obter estado atual
+- Risco: race condition se API lenta
+</Card>
+
+</CardGrid>
+
+### Outbox Pattern — SQL
+
+```sql
+-- Uma única transação garante atomicidade
+BEGIN TRANSACTION;
+  INSERT INTO orders (id, status) VALUES ('abc', 'created');
+  INSERT INTO outbox (id, topic, payload, created_at, sent_at)
+  VALUES (gen_uuid(), 'order.created', '{"orderId":"abc"}', NOW(), NULL);
+COMMIT;
+-- Relay (Debezium CDC ou polling loop):
+-- SELECT * FROM outbox WHERE sent_at IS NULL ORDER BY created_at;
+-- → publica no broker → UPDATE outbox SET sent_at = NOW() WHERE id = ?
+```
+
+### Fan-out com SNS + SQS
+
+<FlowDiagram
+  rows={[
+    { box: "Producer", color: "#fb923c" },
+    { box: 'SNS Topic "order-events"', color: "#38bdf8", indent: 1 },
+    { box: 'SQS "billing"', color: "#fb923c", indent: 2, note: "→ Lambda/ECS" },
+    { box: 'SQS "inventory"', color: "#fb923c", indent: 2, note: "→ Lambda/ECS" },
+    { box: 'SQS "notify"', color: "#fb923c", indent: 2, note: "→ Lambda/ECS" },
+  ]}
+/>
+
+## Garantias de Entrega
+
+Define o comportamento do sistema quando há falhas no producer, broker ou consumer.
+
+<CardGrid cols={3}>
+
+<Card accent="#f87171" pill="Fire & Forget" title="At-Most-Once">
+Enviado uma vez, sem retry. Pode ser **perdido** se broker falhar.
+
+- Menor latência e overhead
+- Producer não aguarda ack
+- Uso: métricas, logs não-críticos
+- Kafka: `acks=0`
+</Card>
+
+<Card accent="#fbbf24" pill="Retry" title="At-Least-Once">
+Entregue **uma ou mais vezes**. Consumer pode receber duplicatas.
+
+- Producer reenvia se não recebeu ack
+- Padrão mais comum na prática
+- Consumer deve ser idempotente
+- Kafka: `acks=all + retries>0`
+</Card>
+
+<Card accent="#66bb6a" pill="Transacional" title="Exactly-Once">
+Processada **exatamente uma vez**. Mais complexo, impacto em throughput.
+
+- Kafka Transactions (`enable.idempotence=true`)
+- SQS FIFO + MessageDeduplicationId
+- ~20-30% overhead de performance
+- Uso: pedidos, pagamentos
+</Card>
+
+</CardGrid>
+
+### Idempotência no Consumer
+
+```typescript
+async processMessage(msg: OrderCreatedEvent) {
+  // 1. Verifica se já processou (messageId único)
+  const seen = await redis.exists(`idem:${msg.messageId}`)
+  if (seen) return // ack sem processar — duplicata ignorada
+
+  // 2. Processamento real
+  await createOrder(msg.orderId)
+
+  // 3. Marca como visto (TTL de segurança)
+  await redis.set(`idem:${msg.messageId}`, 1, 'EX', 604800) // 7 dias
+}
+// Kafka  → topic + partition + offset
+// Rabbit → msg.properties.messageId
+// SQS    → message.MessageId (gerado pelo SQS)
+```
+
+<Callout type="tip">
+**Regra prática:** Design consumers como idempotentes (at-least-once) por padrão. Use exactly-once apenas quando duplicatas têm custo inaceitável — pagamentos, envio de email único, débito em conta.
+</Callout>
