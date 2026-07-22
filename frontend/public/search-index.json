@@ -408,5 +408,80 @@
       "Circuit Breaker",
       "Service Mesh"
     ]
+  },
+  {
+    "id": "filas-mensageria#_",
+    "slug": "filas-mensageria",
+    "title": "Filas & Mensageria",
+    "category": "infra",
+    "section": "Filas & Mensageria",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Kafka",
+      "RabbitMQ",
+      "Pub/Sub",
+      "DLQ"
+    ]
+  },
+  {
+    "id": "filas-mensageria#fundamentos-de-mensageria",
+    "slug": "filas-mensageria",
+    "title": "Filas & Mensageria",
+    "category": "infra",
+    "section": "Fundamentos de Mensageria",
+    "anchor": "fundamentos-de-mensageria",
+    "text": "Mensageria é a troca assíncrona de informações via mensagens através de um intermediário (broker), desacoplando produtores de consumidores no tempo e no espaço. Componentes Publica mensagens. Não sabe quem consome nem quando. Só conhece o broker. Recebe, armazena e entrega mensagens. Ex: Kafka, RabbitMQ, SQS. Lê mensagens. Pull based (Kafka) ou push based (RabbitMQ). Canal ponto a ponto. Cada mensagem vai para um único consumer. Canal de broadcast. Múltiplos consumers recebem a mesma mensagem. Consumers que dividem partições de um tópico. Cada partição → 1 membro. Síncrono vs Assíncrono Desacoplamento: serviços evoluem independentemente Resiliência: mensagens sobrevivem a falhas temporárias Escalabilidade: consumers escalam horizontalmente Buffer: absorve picos sem derrubar consumers Replay: reprocessar eventos históricos (Kafka) Eventual consistency — sem resposta imediata Debugging mais complexo (fluxo assíncrono) Ordenação estrita é difícil de garantir Consumers precisam ser idempotentes Infraestrutura extra para operar Use mensageria quando a operação pode ser diferida e o caller não precisa da resposta imediatamente. Para leitura de dados ou transações síncronas, REST/gRPC ainda é a escolha certa.",
+    "tags": [
+      "Kafka",
+      "RabbitMQ",
+      "Pub/Sub",
+      "DLQ"
+    ]
+  },
+  {
+    "id": "filas-mensageria#principais-ferramentas",
+    "slug": "filas-mensageria",
+    "title": "Filas & Mensageria",
+    "category": "infra",
+    "section": "Principais Ferramentas",
+    "anchor": "principais-ferramentas",
+    "text": "Cada broker tem trade offs distintos de throughput, latência, ordenação e complexidade operacional. Log distribuído imutável e particionado. Altíssimo throughput (milhões msg/s). Dados persistem por tempo configurável — ideal para event streaming. Partições permitem paralelismo controlado Consumer groups para balanceamento Offsets → replay de eventos históricos Retenção configurável: horas, dias, infinito Kafka Streams para processamento em stream Schema Registry para versionamento de eventos Message broker AMQP com roteamento flexível. Ideal para work queues e routing complexo. Exchanges: Direct, Topic, Fanout, Headers Roteamento por routing key + binding Push based (broker empurra ao consumer) Ack/Nack por mensagem individual TTL, DLX (Dead Letter Exchange) nativos Plugin de streams (RabbitMQ 3.9+) Serviços gerenciados AWS. SQS ponto a ponto, SNS fan out. Zero operação. SQS Standard: throughput ilimitado, sem ordem SQS FIFO: ordem estrita, ~3k msg/s por shard Visibility Timeout: previne duplo processamento SNS → múltiplas filas SQS (fan out) DLQ nativo configurável no console Stream nativo do Redis. Ideal quando Redis já está na stack e volume não justifica Kafka. XADD / XREAD para produzir e consumir Consumer groups similar ao Kafka IDs baseados em timestamp (ordem natural) XACK para confirmar processamento MAXLEN para limitar retenção por tamanho Comparativo Throughput \", \" Muito alto \", \" ~50k/s \", \" Muito alto \", \" ~3k/s por shard \"], [\" Ordenação \", \" Por partição \", \" Por fila \", \" Sem garantia \", \" Estrita por grupo \"], [\" Retenção \", \" Configurável (forever) \", \" Até consumir (TTL) \", \" Até 14 dias \", \" Até 14 dias \"], [\" Replay \", \" Sim (offset reset) \", \" Não \", \" Não \", \" Não \"], [\" Roteamento \", \" Por tópico/partição \", \" Flexível (exchanges) \", \" Simples \", \" Simples \"], [\" Operação \", \" Complexa \", \" Moderada \", \" Gerenciada \", \" Gerenciada \"], ]} / Kafka — Anatomia Interna RabbitMQ — Exchanges",
+    "tags": [
+      "Kafka",
+      "RabbitMQ",
+      "Pub/Sub",
+      "DLQ"
+    ]
+  },
+  {
+    "id": "filas-mensageria#padroes-de-mensageria",
+    "slug": "filas-mensageria",
+    "title": "Filas & Mensageria",
+    "category": "infra",
+    "section": "Padrões de Mensageria",
+    "anchor": "padroes-de-mensageria",
+    "text": "Cada mensagem processada por exatamente um consumer. Distribui trabalho em paralelo. Load balancing automático entre consumers Mensagem removida após ack bem sucedido Escala adicionando mais consumers Cada mensagem entregue a todos os subscribers. Broadcast de eventos de domínio. Consumer groups independentes (Kafka) Fanout Exchange (RabbitMQ) SNS → múltiplas filas SQS (AWS) Fila que recebe mensagens que falharam após N tentativas. Previne perda silenciosa. Alertas na DLQ indicam bug no consumer Reprocessamento manual ou automático Suporta investigação post mortem N consumers competem pela mesma fila — escala horizontal natural. N consumers processam N mensagens em paralelo Novo consumer entra automaticamente na pool Cuidado com operações order sensitive Garante atomicidade entre salvar no banco e publicar mensagem, sem 2PC. Salva evento na tabela outbox na mesma TX Processo separado publica outbox → broker Elimina dual write problem Mensagem mínima (só IDs) notifica que algo aconteceu. Consumer busca detalhes via API. Payload leve, sem dados sensíveis no broker Consumer usa API para obter estado atual Risco: race condition se API lenta Outbox Pattern — SQL sql Uma única transação garante atomicidade BEGIN TRANSACTION; INSERT INTO orders (id, status) VALUES ('abc', 'created'); INSERT INTO outbox (id, topic, payload, created at, sent at) VALUES (gen uuid(), 'order.created', '{\"orderId\":\"abc\"}', NOW(), NULL); COMMIT; Relay (Debezium CDC ou polling loop): SELECT FROM outbox WHERE sent at IS NULL ORDER BY created at; → publica no broker → UPDATE outbox SET sent at = NOW() WHERE id = ? Fan out com SNS + SQS",
+    "tags": [
+      "Kafka",
+      "RabbitMQ",
+      "Pub/Sub",
+      "DLQ"
+    ]
+  },
+  {
+    "id": "filas-mensageria#garantias-de-entrega",
+    "slug": "filas-mensageria",
+    "title": "Filas & Mensageria",
+    "category": "infra",
+    "section": "Garantias de Entrega",
+    "anchor": "garantias-de-entrega",
+    "text": "Define o comportamento do sistema quando há falhas no producer, broker ou consumer. Enviado uma vez, sem retry. Pode ser perdido se broker falhar. Menor latência e overhead Producer não aguarda ack Uso: métricas, logs não críticos Kafka: acks=0 Entregue uma ou mais vezes . Consumer pode receber duplicatas. Producer reenvia se não recebeu ack Padrão mais comum na prática Consumer deve ser idempotente Kafka: acks=all + retries 0 Processada exatamente uma vez . Mais complexo, impacto em throughput. Kafka Transactions ( enable.idempotence=true ) SQS FIFO + MessageDeduplicationId ~20 30% overhead de performance Uso: pedidos, pagamentos Idempotência no Consumer typescript async processMessage(msg: OrderCreatedEvent) { // 1. Verifica se já processou (messageId único) const seen = await redis.exists( idem:${msg.messageId} ) if (seen) return // ack sem processar — duplicata ignorada // 2. Processamento real await createOrder(msg.orderId) // 3. Marca como visto (TTL de segurança) await redis.set( idem:${msg.messageId} , 1, 'EX', 604800) // 7 dias } // Kafka → topic + partition + offset // Rabbit → msg.properties.messageId // SQS → message.MessageId (gerado pelo SQS) Regra prática: Design consumers como idempotentes (at least once) por padrão. Use exactly once apenas quando duplicatas têm custo inaceitável — pagamentos, envio de email único, débito em conta.",
+    "tags": [
+      "Kafka",
+      "RabbitMQ",
+      "Pub/Sub",
+      "DLQ"
+    ]
   }
 ]
