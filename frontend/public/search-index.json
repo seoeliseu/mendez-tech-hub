@@ -588,5 +588,110 @@
       "DDD",
       "Hexagonal"
     ]
+  },
+  {
+    "id": "system-design#_",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "System Design",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#load-balancing",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "Load Balancing",
+    "anchor": "load-balancing",
+    "text": "Distribui tráfego entre múltiplos servidores para evitar sobrecarga, aumentar disponibilidade e escalar horizontalmente. Algoritmos de Load Balancing Distribui sequencialmente. Simples, bom quando servidores são equivalentes. Servidores mais poderosos recebem mais requests. Bom para hardware heterogêneo. Envia para o servidor com menos conexões ativas. Ótimo para requests de duração variável. Hash do IP do client determina o servidor. Mesma session sempre vai ao mesmo servidor (sticky). Servidor aleatório. Surpreendentemente eficiente para grandes pools com requests curtos. Load balancer consulta saúde do servidor (CPU, memória) e roteia para o menos ocupado. L4 vs L7 Load Balancer Opera em \", \"TCP/UDP — IP + porta\", \"HTTP/HTTPS — headers, URL, cookies\"], [\" Conteúdo \", \"Não inspeciona payload\", \"Lê e roteia por URL, método, header\"], [\" Performance \", \" Mais rápido (menos processamento) \", \" Ligeiramente mais lento \"], [\" Funcionalidades \", \"Básico\", \" SSL termination, routing inteligente, caching, WAF \"], [\" Exemplos \", \"AWS NLB, HAProxy (modo TCP)\", \"AWS ALB, NGINX, Traefik, Envoy\"], [\" Uso ideal \", \"Alta throughput, latência mínima\", \"Aplicações web, microsserviços, APIs\"], ]} / Arquitetura com Load Balancer DNS → LB Tier 1 (L7) distribui em paralelo entre App Srv 1, App Srv 2 e App Srv 3, que convergem em LB Tier 2 (L4) → distribui em paralelo entre DB Primary, DB Read 1 e DB Read 2. Health Checks & Session Persistence LB verifica periodicamente se cada server está saudável. Remove automaticamente servers com falha. HTTP: GET /health → 200 OK TCP: verifica se porta aceita conexão Passive: detecta falhas em requests reais Configura: interval, timeout, thresholds Garante que um client sempre vai ao mesmo server. Necessário para apps com estado na memória. Cookie based: LB injeta cookie com server ID IP hash: mesma origem → mesmo destino ⚠️ Reduz efetividade do balanceamento Prefira session store externo (Redis)",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#caching",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "Caching",
+    "anchor": "caching",
+    "text": "Armazena dados frequentemente acessados em memória para reduzir latência e carga no banco de dados. Um dos maiores impactos em performance de sistemas. Níveis de Cache Estratégias de Cache Mais comum. App verifica cache primeiro; se miss, busca DB e popula cache. App controla quando popular o cache Cache contém apenas dados solicitados First request = miss = latência maior Cache pode ficar inconsistente (stale data) Escreve no cache e no DB simultaneamente. Cache sempre atualizado. Nunca retorna dados stale Write latency = cache + DB Cache pode ter dados nunca lidos (desperdício) Bom quando reads são mais frequentes que writes Escreve no cache primeiro, sincroniza com DB de forma assíncrona. Write muito rápido (só cache) ⚠️ Risco de perda de dados se cache cair Bom para write heavy workloads Complexidade de implementação Cache senta na frente do DB. App só fala com cache, que busca do DB se necessário. Transparente para a aplicação Cache library gerencia população Menos controle sobre o que é cacheado Ex: NHibernate 2nd level cache Cache Invalidation — O Problema Difícil typescript // TTL based: expira automaticamente após N segundos redis.set('user:123', userData, 'EX', 300) // expira em 5 min // Event based: invalida quando dado muda async updateUser(userId: string, data: UpdateUserDto) { await db.update('users', data, userId) await redis.del( user:${userId} ) // invalida cache await redis.del( user list: ) // invalida listas relacionadas } // Cache stampede prevention: só um worker popula o cache // Outros aguardam com polling ou pub/sub notification const lock = await redis.set( lock:user:${id} , 1, 'NX', 'EX', 5) if (lock) { / populate cache / } else { / wait and retry / } Redis vs Memcached Estruturas \", \" String, Hash, List, Set, Sorted Set, Stream \", \"Apenas String (key value)\"], [\" Persistência \", \" RDB snapshots + AOF log \", \" Apenas memória \"], [\" Replicação \", \" Master replica nativo \", \" Não nativo \"], [\" Cluster \", \" Redis Cluster (hash slots) \", \" Client side sharding \"], [\" Lua scripting \", \" Sim \", \" Não \"], [\" Use case \", \"Sessions, cache, filas, pub/sub, rate limiting\", \"Cache simples, alta velocidade pura\"], ]} /",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#cdn-content-delivery-network",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "CDN — Content Delivery Network",
+    "anchor": "cdn-content-delivery-network",
+    "text": "Rede de servidores geograficamente distribuídos (PoPs — Points of Presence) que servem conteúdo ao usuário a partir do nó mais próximo. Funcionamento Cache HIT → CDN Edge responde direto (baixa latência). Cache MISS → busca no Origin Server, a CDN Edge guarda a cópia e então responde ao User. Pull CDN vs Push CDN CDN busca conteúdo do origin apenas quando há um miss. Mais comum e simples. Conteúdo populado sob demanda Primeiro request por região = miss (latência) Expiração via TTL / Cache Control Ex: CloudFront, Cloudflare, Fastly Você faz upload do conteúdo para todos os edge nodes proativamente. Zero miss no primeiro request Melhor para conteúdo grande e estático Você controla quando e o quê distribuir Complexidade de gerenciamento maior Cache Control Headers text // Estático — cache longo com hash no filename Cache Control: public, max age=31536000, immutable // app.a3f9b2c.js — hash muda com novo deploy // HTML — revalidar sempre (stale while revalidate) Cache Control: public, max age=0, stale while revalidate=60 // Serve stale por até 60s enquanto revalida em background // API dinâmica — cache curto com variação por usuário Cache Control: private, max age=30 Vary: Authorization // cache separado por token // Sem cache Cache Control: no store // nunca armazena Cache Control: no cache // armazena, mas revalida antes de servir Casos de Uso CDN JS, CSS, imagens, fontes, vídeos. Cache longo com fingerprinting. Respostas GET públicas cacheadas no edge. Reduz load no origin. Absorve tráfego malicioso antes de chegar ao origin. Cloudflare, AWS Shield. Executa código no edge (Cloudflare Workers, Lambda@Edge). Lógica próxima ao usuário. Redimensiona, converte para WebP/AVIF e comprime imagens dinamicamente no edge. CDN gerencia certificados TLS. Origin pode usar HTTP interno (com rede privada).",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#cap-theorem",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "CAP Theorem",
+    "anchor": "cap-theorem",
+    "text": "Em um sistema distribuído, você só pode garantir 2 de 3 propriedades simultaneamente: Consistency, Availability, Partition Tolerance. As Três Propriedades Toda leitura retorna a versão mais recente dos dados (ou erro). Todos os nós veem os mesmos dados ao mesmo tempo. Toda request recebe uma resposta (não erro), embora não seja necessariamente a mais recente. Sistema continua funcionando mesmo com falhas de rede que isolam nós. Na prática, P é obrigatório em sistemas distribuídos. P é obrigatório em qualquer sistema distribuído real — redes falham. Logo, a escolha real é entre CP (prefere consistência) e AP (prefere disponibilidade) durante uma partição de rede. Sistemas CP vs AP CP \", \"Retorna erro ou timeout em vez de dado potencialmente desatualizado\", \"ZooKeeper, HBase, etcd, CockroachDB, MongoDB (strong)\", \"Inventário, contas bancárias, coordenação distribuída\"], [\" AP \", \"Retorna dado possivelmente stale, mas nunca nega resposta\", \"Cassandra, DynamoDB, CouchDB, Riak, DNS\", \"Catálogo, social feed, analytics, perfis de usuário\"], [\" CA \", \"Só possível sem distribuição (single node)\", \"PostgreSQL, MySQL (single node)\", \"Transações ACID tradicionais\"], ]} / ACID vs BASE Atomicity: transação completa ou falha totalmente Consistency: regras de integridade sempre mantidas Isolation: transações concorrentes não interferem Durability: dados persistidos sobrevivem a crashes Basically Available: sistema responde sempre Soft state: estado pode mudar mesmo sem input Eventually consistent: dados convergem com o tempo Troca consistência forte por disponibilidade e escala PACELC — Extensão do CAP text CAP só modela o comportamento durante uma PARTIÇÃO. PACELC também modela o trade off quando NÃO há partição: Se Partition: tradeoff C vs A Else (sem partição): tradeoff L (Latência) vs C (Consistency) Exemplo: DynamoDB = PA/EL: durante partição escolhe A; sem partição, baixa latência CockroachDB = PC/EC: durante partição escolhe C; sem partição, alta consistência Cassandra = PA/EL: sempre otimiza disponibilidade e latência",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#rate-limiting",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "Rate Limiting",
+    "anchor": "rate-limiting",
+    "text": "Controla o número de requests que um cliente pode fazer em um período de tempo. Protege contra abuso, DDoS e garante fair use da API. Algoritmos de Rate Limiting Bucket tem capacidade N. Tokens adicionados a taxa R. Request consome 1 token. Permite bursts até N. Permite burst até capacidade do bucket Bom para APIs que toleram tráfego variável Twitter, AWS API Gateway usam este algoritmo Queue de requests processados a taxa constante R. Overflow = descarte. Sem burst. Output sempre à taxa constante Protege backends de picos Request além da fila = 429 Too Many Requests Conta requests em janelas fixas (ex: 100/min). Simples, mas borda da janela vulnerável a burst duplo. 100 req no último segundo da janela + 100 no primeiro da próxima = 200 no mesmo segundo Simples de implementar com Redis INCR + EXPIRE Mantém timestamp de cada request. Conta requests no último período. Preciso mas usa mais memória. Preciso — sem o problema de borda O(N) memória por cliente (N = max requests) Redis Sorted Set com score = timestamp Implementação — Token Bucket com Redis lua Lua script (atômico no Redis) local key = KEYS[1] \"ratelimit:user:123\" local capacity = tonumber(ARGV[1]) 100 tokens local rate = tonumber(ARGV[2]) 10 tokens/segundo local now = tonumber(ARGV[3]) timestamp atual (ms) local bucket = redis.call('HMGET', key, 'tokens', 'last refill') local tokens = tonumber(bucket[1]) or capacity local last = tonumber(bucket[2]) or now Adiciona tokens proporcionais ao tempo passado local elapsed = (now last) / 1000 tokens = math.min(capacity, tokens + elapsed rate) if tokens = 1 then tokens = tokens 1 redis.call('HMSET', key, 'tokens', tokens, 'last refill', now) redis.call('EXPIRE', key, 3600) return 1 permitido end return 0 bloqueado → 429 Too Many Requests Headers de Rate Limit (padrão) text HTTP/1.1 200 OK X RateLimit Limit: 100 // capacidade total X RateLimit Remaining: 43 // requests restantes X RateLimit Reset: 1735689600 // timestamp de reset (epoch) // Quando bloqueado: HTTP/1.1 429 Too Many Requests Retry After: 30 // segundos até poder tentar novamente",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
+  },
+  {
+    "id": "system-design#resiliencia-padroes-de-disponibilidade",
+    "slug": "system-design",
+    "title": "System Design",
+    "category": "infra",
+    "section": "Resiliência & Padrões de Disponibilidade",
+    "anchor": "resiliencia-padroes-de-disponibilidade",
+    "text": "Padrões para construir sistemas que falham graciosamente e se recuperam automaticamente. Circuit Breaker Se OK → volta para CLOSED. Se falha → volta para OPEN. Cached response: retorna última resposta conhecida Default value: lista vazia, valor padrão Degraded mode: funcionalidade reduzida Queue request: processa quando serviço voltar Isola recursos em pools separados. Falha em um serviço não drena thread pool de outros. Thread pool por serviço externo Connection pool separado por recurso Evita cascading failures Retry com Exponential Backoff typescript async withRetry (fn: () = Promise , maxRetries = 3): Promise { for (let attempt = 0; attempt Client consulta service registry (Consul, etcd) e escolhe a instância. Client faz o load balancing. Client tem controle do balanceamento Mais complexidade no client Ex: Eureka + Ribbon (Netflix) Client chama um load balancer/API Gateway que consulta o registry e roteia. Client simples — não sabe do registry LB é ponto único (alta disponibilidade necessária) Ex: AWS ALB + ECS Service Discovery Regra dos 9s: 99% = 3.65 dias de downtime/ano. 99.9% = 8.7h. 99.99% = 52min. 99.999% = 5.26min. Cada 9 adicional custa exponencialmente mais — defina o SLA baseado no impacto real do negócio.",
+    "tags": [
+      "Load Balancer",
+      "CAP",
+      "Cache",
+      "CDN"
+    ]
   }
 ]

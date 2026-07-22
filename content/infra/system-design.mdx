@@ -1,0 +1,517 @@
+---
+title: "System Design"
+slug: system-design
+category: infra
+icon: "⚙️"
+accent: "#f87171"
+description: "Load Balancing, CDN, Caching, CAP Theorem, Rate Limiting e como projetar sistemas para milhões de usuários."
+tags: [Load Balancer, CAP, Cache, CDN]
+order: 5
+updated: 2026-07-22
+---
+
+## Load Balancing
+
+Distribui tráfego entre múltiplos servidores para evitar sobrecarga, aumentar disponibilidade e escalar horizontalmente.
+
+### Algoritmos de Load Balancing
+
+<CardGrid cols={3}>
+
+<Card accent="#f87171" title="Round Robin">
+Distribui sequencialmente. Simples, bom quando servidores são equivalentes.
+</Card>
+
+<Card accent="#f87171" title="Weighted Round Robin">
+Servidores mais poderosos recebem mais requests. Bom para hardware heterogêneo.
+</Card>
+
+<Card accent="#f87171" title="Least Connections">
+Envia para o servidor com menos conexões ativas. Ótimo para requests de duração variável.
+</Card>
+
+<Card accent="#f87171" title="IP Hash">
+Hash do IP do client determina o servidor. Mesma session sempre vai ao mesmo servidor (sticky).
+</Card>
+
+<Card accent="#f87171" title="Random">
+Servidor aleatório. Surpreendentemente eficiente para grandes pools com requests curtos.
+</Card>
+
+<Card accent="#f87171" title="Resource-Based">
+Load balancer consulta saúde do servidor (CPU, memória) e roteia para o menos ocupado.
+</Card>
+
+</CardGrid>
+
+### L4 vs L7 Load Balancer
+
+<ComparisonTable
+  head={["Aspecto", "L4 (Transport Layer)", "L7 (Application Layer)"]}
+  rows={[
+    ["<strong>Opera em</strong>", "TCP/UDP — IP + porta", "HTTP/HTTPS — headers, URL, cookies"],
+    ["<strong>Conteúdo</strong>", "Não inspeciona payload", "Lê e roteia por URL, método, header"],
+    ["<strong>Performance</strong>", "<span style='color:#66bb6a'>Mais rápido (menos processamento)</span>", "<span style='color:#fbbf24'>Ligeiramente mais lento</span>"],
+    ["<strong>Funcionalidades</strong>", "Básico", "<span style='color:#66bb6a'>SSL termination, routing inteligente, caching, WAF</span>"],
+    ["<strong>Exemplos</strong>", "AWS NLB, HAProxy (modo TCP)", "AWS ALB, NGINX, Traefik, Envoy"],
+    ["<strong>Uso ideal</strong>", "Alta throughput, latência mínima", "Aplicações web, microsserviços, APIs"],
+  ]}
+/>
+
+### Arquitetura com Load Balancer
+
+<FlowDiagram
+  rows={[
+    { box: "DNS", color: "#38bdf8", note: "georouting opcional" },
+    { box: "LB Tier 1 (externo, L7)", color: "#f87171", indent: 1, note: "SSL termination, WAF" },
+    { box: "App Srv 1", color: "#38bdf8", indent: 2 },
+    { box: "App Srv 2", color: "#38bdf8", indent: 2 },
+    { box: "App Srv 3", color: "#38bdf8", indent: 2 },
+    { box: "LB Tier 2 (interno, L4)", color: "#f87171", indent: 1 },
+    { box: "DB Primary", color: "#66bb6a", indent: 2 },
+    { box: "DB Read 1", color: "#66bb6a", indent: 2 },
+    { box: "DB Read 2", color: "#66bb6a", indent: 2 },
+  ]}
+/>
+
+*DNS → LB Tier 1 (L7) distribui em paralelo entre App Srv 1, App Srv 2 e App Srv 3, que convergem em LB Tier 2 (L4) → distribui em paralelo entre DB Primary, DB Read 1 e DB Read 2.*
+
+### Health Checks & Session Persistence
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="Health Check">
+LB verifica periodicamente se cada server está saudável. Remove automaticamente servers com falha.
+
+- HTTP: GET /health → 200 OK
+- TCP: verifica se porta aceita conexão
+- Passive: detecta falhas em requests reais
+- Configura: interval, timeout, thresholds
+</Card>
+
+<Card accent="#f87171" title="Sticky Sessions">
+Garante que um client sempre vai ao mesmo server. Necessário para apps com estado na memória.
+
+- Cookie-based: LB injeta cookie com server ID
+- IP-hash: mesma origem → mesmo destino
+- ⚠️ Reduz efetividade do balanceamento
+- Prefira session store externo (Redis)
+</Card>
+
+</CardGrid>
+
+## Caching
+
+Armazena dados frequentemente acessados em memória para reduzir latência e carga no banco de dados. Um dos maiores impactos em performance de sistemas.
+
+### Níveis de Cache
+
+<FlowDiagram
+  rows={[
+    { box: "Browser Cache", color: "#38bdf8", note: "Cache-Control, ETag, Last-Modified" },
+    { box: "CDN Cache", color: "#f87171", indent: 1, note: "arquivos estáticos, respostas de API" },
+    { box: "App-level Cache", color: "#66bb6a", indent: 2, note: "Redis, Memcached (dados calculados, sessões)" },
+    { box: "Database Query Cache", color: "#38bdf8", indent: 3, note: "MySQL Query Cache (deprecated), pg_query_cache" },
+    { box: "CPU / OS Cache", color: "#a78bfa", indent: 4, note: "gerenciado pelo hardware/OS" },
+  ]}
+/>
+
+### Estratégias de Cache
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="Cache-Aside (Lazy Loading)">
+Mais comum. App verifica cache primeiro; se miss, busca DB e popula cache.
+
+- App controla quando popular o cache
+- Cache contém apenas dados solicitados
+- First request = miss = latência maior
+- Cache pode ficar inconsistente (stale data)
+</Card>
+
+<Card accent="#f87171" title="Write-Through">
+Escreve no cache e no DB simultaneamente. Cache sempre atualizado.
+
+- Nunca retorna dados stale
+- Write latency = cache + DB
+- Cache pode ter dados nunca lidos (desperdício)
+- Bom quando reads são mais frequentes que writes
+</Card>
+
+<Card accent="#f87171" title="Write-Back (Write-Behind)">
+Escreve no cache primeiro, sincroniza com DB de forma assíncrona.
+
+- Write muito rápido (só cache)
+- ⚠️ Risco de perda de dados se cache cair
+- Bom para write-heavy workloads
+- Complexidade de implementação
+</Card>
+
+<Card accent="#f87171" title="Read-Through">
+Cache senta na frente do DB. App só fala com cache, que busca do DB se necessário.
+
+- Transparente para a aplicação
+- Cache library gerencia população
+- Menos controle sobre o que é cacheado
+- Ex: NHibernate 2nd-level cache
+</Card>
+
+</CardGrid>
+
+### Cache Invalidation — O Problema Difícil
+
+```typescript
+// TTL-based: expira automaticamente após N segundos
+redis.set('user:123', userData, 'EX', 300) // expira em 5 min
+
+// Event-based: invalida quando dado muda
+async updateUser(userId: string, data: UpdateUserDto) {
+  await db.update('users', data, userId)
+  await redis.del(`user:${userId}`)      // invalida cache
+  await redis.del(`user-list:*`)         // invalida listas relacionadas
+}
+
+// Cache stampede prevention: só um worker popula o cache
+// Outros aguardam com polling ou pub/sub notification
+const lock = await redis.set(`lock:user:${id}`, 1, 'NX', 'EX', 5)
+if (lock) { /* populate cache */ } else { /* wait and retry */ }
+```
+
+### Redis vs Memcached
+
+<ComparisonTable
+  head={["Aspecto", "Redis", "Memcached"]}
+  rows={[
+    ["<strong>Estruturas</strong>", "<span style='color:#66bb6a'>String, Hash, List, Set, Sorted Set, Stream</span>", "Apenas String (key-value)"],
+    ["<strong>Persistência</strong>", "<span style='color:#66bb6a'>RDB snapshots + AOF log</span>", "<span style='color:#f87171'>Apenas memória</span>"],
+    ["<strong>Replicação</strong>", "<span style='color:#66bb6a'>Master-replica nativo</span>", "<span style='color:#f87171'>Não nativo</span>"],
+    ["<strong>Cluster</strong>", "<span style='color:#66bb6a'>Redis Cluster (hash slots)</span>", "<span style='color:#fbbf24'>Client-side sharding</span>"],
+    ["<strong>Lua scripting</strong>", "<span style='color:#66bb6a'>Sim</span>", "<span style='color:#f87171'>Não</span>"],
+    ["<strong>Use case</strong>", "Sessions, cache, filas, pub/sub, rate limiting", "Cache simples, alta velocidade pura"],
+  ]}
+/>
+
+## CDN — Content Delivery Network
+
+Rede de servidores geograficamente distribuídos (PoPs — Points of Presence) que servem conteúdo ao usuário a partir do nó mais próximo.
+
+### Funcionamento
+
+<FlowDiagram
+  rows={[
+    { box: "User (São Paulo)", note: "DNS lookup" },
+    { box: "CDN Edge (GRU)", indent: 1 },
+    { box: "Cache HIT?", indent: 2 },
+    { box: "YES → retorna conteúdo", indent: 3, note: "baixa latência" },
+    { box: "NO (miss) → Origin Server (us-east-1)", indent: 3 },
+    { box: "resposta → CDN Edge", indent: 3, note: "armazena cópia" },
+    { box: "User", indent: 3, note: "◄── resposta" },
+  ]}
+/>
+
+*Cache HIT → CDN Edge responde direto (baixa latência). Cache MISS → busca no Origin Server, a CDN Edge guarda a cópia e então responde ao User.*
+
+### Pull CDN vs Push CDN
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="🔄 Pull CDN">
+CDN busca conteúdo do origin apenas quando há um miss. Mais comum e simples.
+
+- Conteúdo populado sob demanda
+- Primeiro request por região = miss (latência)
+- Expiração via TTL / Cache-Control
+- Ex: CloudFront, Cloudflare, Fastly
+</Card>
+
+<Card accent="#f87171" title="⬆️ Push CDN">
+Você faz upload do conteúdo para todos os edge nodes proativamente.
+
+- Zero miss no primeiro request
+- Melhor para conteúdo grande e estático
+- Você controla quando e o quê distribuir
+- Complexidade de gerenciamento maior
+</Card>
+
+</CardGrid>
+
+### Cache-Control Headers
+
+```text
+// Estático — cache longo com hash no filename
+Cache-Control: public, max-age=31536000, immutable
+// app.a3f9b2c.js — hash muda com novo deploy
+
+// HTML — revalidar sempre (stale-while-revalidate)
+Cache-Control: public, max-age=0, stale-while-revalidate=60
+// Serve stale por até 60s enquanto revalida em background
+
+// API dinâmica — cache curto com variação por usuário
+Cache-Control: private, max-age=30
+Vary: Authorization // cache separado por token
+
+// Sem cache
+Cache-Control: no-store // nunca armazena
+Cache-Control: no-cache // armazena, mas revalida antes de servir
+```
+
+### Casos de Uso CDN
+
+<CardGrid cols={3}>
+
+<Card accent="#f87171" title="Assets Estáticos">
+JS, CSS, imagens, fontes, vídeos. Cache longo com fingerprinting.
+</Card>
+
+<Card accent="#f87171" title="API Caching">
+Respostas GET públicas cacheadas no edge. Reduz load no origin.
+</Card>
+
+<Card accent="#f87171" title="DDoS Protection">
+Absorve tráfego malicioso antes de chegar ao origin. Cloudflare, AWS Shield.
+</Card>
+
+<Card accent="#f87171" title="Edge Computing">
+Executa código no edge (Cloudflare Workers, Lambda@Edge). Lógica próxima ao usuário.
+</Card>
+
+<Card accent="#f87171" title="Image Optimization">
+Redimensiona, converte para WebP/AVIF e comprime imagens dinamicamente no edge.
+</Card>
+
+<Card accent="#f87171" title="SSL Termination">
+CDN gerencia certificados TLS. Origin pode usar HTTP interno (com rede privada).
+</Card>
+
+</CardGrid>
+
+## CAP Theorem
+
+Em um sistema distribuído, você só pode garantir **2 de 3** propriedades simultaneamente: Consistency, Availability, Partition Tolerance.
+
+### As Três Propriedades
+
+<CardGrid cols={3}>
+
+<Card accent="#38bdf8" title="Consistency (C)">
+Toda leitura retorna a **versão mais recente** dos dados (ou erro). Todos os nós veem os mesmos dados ao mesmo tempo.
+</Card>
+
+<Card accent="#66bb6a" title="Availability (A)">
+Toda request recebe uma **resposta** (não erro), embora não seja necessariamente a mais recente.
+</Card>
+
+<Card accent="#a78bfa" title="Partition Tolerance (P)">
+Sistema continua funcionando mesmo com **falhas de rede** que isolam nós. Na prática, P é obrigatório em sistemas distribuídos.
+</Card>
+
+</CardGrid>
+
+<Callout type="info">
+**P é obrigatório** em qualquer sistema distribuído real — redes falham. Logo, a escolha real é entre **CP** (prefere consistência) e **AP** (prefere disponibilidade) durante uma partição de rede.
+</Callout>
+
+### Sistemas CP vs AP
+
+<ComparisonTable
+  head={["Tipo", "Comportamento em Partição", "Exemplos", "Use Case"]}
+  rows={[
+    ["<strong style='color:#66bb6a'>CP</strong>", "Retorna erro ou timeout em vez de dado potencialmente desatualizado", "ZooKeeper, HBase, etcd, CockroachDB, MongoDB (strong)", "Inventário, contas bancárias, coordenação distribuída"],
+    ["<strong style='color:#fbbf24'>AP</strong>", "Retorna dado possivelmente stale, mas nunca nega resposta", "Cassandra, DynamoDB, CouchDB, Riak, DNS", "Catálogo, social feed, analytics, perfis de usuário"],
+    ["<strong style='color:#f87171'>CA</strong>", "Só possível sem distribuição (single node)", "PostgreSQL, MySQL (single node)", "Transações ACID tradicionais"],
+  ]}
+/>
+
+### ACID vs BASE
+
+<CardGrid cols={2}>
+
+<Card accent="#38bdf8" title="ACID (Bancos Relacionais)">
+- **Atomicity:** transação completa ou falha totalmente
+- **Consistency:** regras de integridade sempre mantidas
+- **Isolation:** transações concorrentes não interferem
+- **Durability:** dados persistidos sobrevivem a crashes
+</Card>
+
+<Card accent="#fb923c" title="BASE (NoSQL/Distribuído)">
+- **Basically Available:** sistema responde sempre
+- **Soft state:** estado pode mudar mesmo sem input
+- **Eventually consistent:** dados convergem com o tempo
+- Troca consistência forte por disponibilidade e escala
+</Card>
+
+</CardGrid>
+
+### PACELC — Extensão do CAP
+
+```text
+CAP só modela o comportamento durante uma PARTIÇÃO.
+PACELC também modela o trade-off quando NÃO há partição:
+
+Se Partition: tradeoff C vs A
+Else (sem partição): tradeoff L (Latência) vs C (Consistency)
+
+Exemplo:
+  DynamoDB = PA/EL: durante partição escolhe A; sem partição, baixa latência
+  CockroachDB = PC/EC: durante partição escolhe C; sem partição, alta consistência
+  Cassandra = PA/EL: sempre otimiza disponibilidade e latência
+```
+
+## Rate Limiting
+
+Controla o número de requests que um cliente pode fazer em um período de tempo. Protege contra abuso, DDoS e garante fair use da API.
+
+### Algoritmos de Rate Limiting
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="🪣 Token Bucket">
+Bucket tem capacidade N. Tokens adicionados a taxa R. Request consome 1 token. Permite bursts até N.
+
+- Permite burst até capacidade do bucket
+- Bom para APIs que toleram tráfego variável
+- Twitter, AWS API Gateway usam este algoritmo
+</Card>
+
+<Card accent="#f87171" title="💧 Leaky Bucket">
+Queue de requests processados a taxa constante R. Overflow = descarte. Sem burst.
+
+- Output sempre à taxa constante
+- Protege backends de picos
+- Request além da fila = 429 Too Many Requests
+</Card>
+
+<Card accent="#f87171" title="🔢 Fixed Window Counter">
+Conta requests em janelas fixas (ex: 100/min). Simples, mas borda da janela vulnerável a burst duplo.
+
+- 100 req no último segundo da janela + 100 no primeiro da próxima = 200 no mesmo segundo
+- Simples de implementar com Redis INCR + EXPIRE
+</Card>
+
+<Card accent="#f87171" title="🪟 Sliding Window Log">
+Mantém timestamp de cada request. Conta requests no último período. Preciso mas usa mais memória.
+
+- Preciso — sem o problema de borda
+- O(N) memória por cliente (N = max requests)
+- Redis Sorted Set com score = timestamp
+</Card>
+
+</CardGrid>
+
+### Implementação — Token Bucket com Redis
+
+```lua
+-- Lua script (atômico no Redis)
+local key = KEYS[1]           -- "ratelimit:user:123"
+local capacity = tonumber(ARGV[1])  -- 100 tokens
+local rate = tonumber(ARGV[2])      -- 10 tokens/segundo
+local now = tonumber(ARGV[3])       -- timestamp atual (ms)
+
+local bucket = redis.call('HMGET', key, 'tokens', 'last_refill')
+local tokens = tonumber(bucket[1]) or capacity
+local last = tonumber(bucket[2]) or now
+
+-- Adiciona tokens proporcionais ao tempo passado
+local elapsed = (now - last) / 1000
+tokens = math.min(capacity, tokens + elapsed * rate)
+
+if tokens >= 1 then
+  tokens = tokens - 1
+  redis.call('HMSET', key, 'tokens', tokens, 'last_refill', now)
+  redis.call('EXPIRE', key, 3600)
+  return 1  -- permitido
+end
+return 0  -- bloqueado → 429 Too Many Requests
+```
+
+### Headers de Rate Limit (padrão)
+
+```text
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 100        // capacidade total
+X-RateLimit-Remaining: 43     // requests restantes
+X-RateLimit-Reset: 1735689600 // timestamp de reset (epoch)
+
+// Quando bloqueado:
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30               // segundos até poder tentar novamente
+```
+
+## Resiliência & Padrões de Disponibilidade
+
+Padrões para construir sistemas que falham graciosamente e se recuperam automaticamente.
+
+### Circuit Breaker
+
+<FlowDiagram
+  title="CIRCUIT BREAKER"
+  rows={[
+    { box: "CLOSED (normal)", color: "#66bb6a", note: "Requests passam. Conta falhas." },
+    { box: "OPEN (falha detectada)", color: "#38bdf8", indent: 1, note: "threshold atingido → rejeita requests, retorna fallback" },
+    { box: "HALF-OPEN (testando)", color: "#f87171", indent: 2, note: "timeout expira → permite 1 request de teste" },
+  ]}
+/>
+
+*Se OK → volta para CLOSED. Se falha → volta para OPEN.*
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="Fallback Strategies">
+- **Cached response:** retorna última resposta conhecida
+- **Default value:** lista vazia, valor padrão
+- **Degraded mode:** funcionalidade reduzida
+- **Queue request:** processa quando serviço voltar
+</Card>
+
+<Card accent="#f87171" title="Bulkhead Pattern">
+Isola recursos em pools separados. Falha em um serviço não drena thread pool de outros.
+
+- Thread pool por serviço externo
+- Connection pool separado por recurso
+- Evita cascading failures
+</Card>
+
+</CardGrid>
+
+### Retry com Exponential Backoff
+
+```typescript
+async withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      if (attempt === maxRetries) throw err
+      // Exponential backoff + jitter para evitar thundering herd
+      const delay = Math.min(1000 * 2 ** attempt + Math.random() * 100, 30000)
+      await sleep(delay) // 100ms, 200ms, 400ms... max 30s
+    }
+  }
+}
+```
+
+### Service Discovery
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="Client-Side Discovery">
+Client consulta service registry (Consul, etcd) e escolhe a instância. Client faz o load balancing.
+
+- Client tem controle do balanceamento
+- Mais complexidade no client
+- Ex: Eureka + Ribbon (Netflix)
+</Card>
+
+<Card accent="#f87171" title="Server-Side Discovery">
+Client chama um load balancer/API Gateway que consulta o registry e roteia.
+
+- Client simples — não sabe do registry
+- LB é ponto único (alta disponibilidade necessária)
+- Ex: AWS ALB + ECS Service Discovery
+</Card>
+
+</CardGrid>
+
+<Callout type="tip">
+**Regra dos 9s:** 99% = 3.65 dias de downtime/ano. 99.9% = 8.7h. 99.99% = 52min. 99.999% = 5.26min. Cada 9 adicional custa exponencialmente mais — defina o SLA baseado no impacto real do negócio.
+</Callout>
