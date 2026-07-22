@@ -5,6 +5,7 @@ import { CardGrid, Card, Badge } from "./CardGrid";
 import { Pipeline } from "./Pipeline";
 import { FlowDiagram } from "./FlowDiagram";
 import { ThreadTimeline } from "./ThreadTimeline";
+import { ComparisonTable } from "./ComparisonTable";
 
 // Real components added in Tasks 4-7. Start with element styling.
 export const mdxComponents: MDXComponents = {
@@ -24,4 +25,5 @@ export const mdxComponents: MDXComponents = {
   Pipeline,
   FlowDiagram,
   ThreadTimeline,
+  ComparisonTable,
 };
