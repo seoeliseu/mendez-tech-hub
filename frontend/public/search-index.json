@@ -483,5 +483,110 @@
       "Pub/Sub",
       "DLQ"
     ]
+  },
+  {
+    "id": "arquiteturas#_",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Padrões de Arquitetura",
+    "anchor": "",
+    "text": "",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#event-driven-architecture-eda",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Event-Driven Architecture (EDA)",
+    "anchor": "event-driven-architecture-eda",
+    "text": "Arquitetura onde componentes se comunicam exclusivamente via eventos — fatos imutáveis que representam algo que aconteceu no domínio. Tipos de Evento Fato relevante para o domínio. Ex: PedidoCriado , PagamentoAprovado . Imutável, passado. Evento publicado para outros serviços (além das fronteiras do bounded context). Contrato público. Intenção de fazer algo. Ex: CriarPedido . Diferente de domain event — pode falhar. Consulta assíncrona. Producer pergunta algo, consumer responde via evento separado. Vantagens e Desafios Baixo acoplamento entre serviços Escala horizontalmente com facilidade Novo consumer sem mudar producer Auditoria natural (log de eventos) Temporal decoupling: consumer pode estar offline Eventual consistency — dados podem divergir Rastreamento de fluxo complexo Schema evolution: versionar eventos é difícil Debugging requer ferramentas específicas (Jaeger, Zipkin) Testes de integração mais complexos Fluxo EDA Cada serviço reage independentemente, sem conhecer os outros EDA não substitui chamadas síncronas para tudo. Use REST/gRPC para leitura de dados e operações que precisam de resposta imediata. Use eventos para notificar sobre mudanças de estado.",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#cqrs-command-query-responsibility-segregation",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "CQRS — Command Query Responsibility Segregation",
+    "anchor": "cqrs-command-query-responsibility-segregation",
+    "text": "Separa as operações de escrita (Commands) das de leitura (Queries) em modelos distintos — podendo usar bancos diferentes para cada lado. Conceito Core Níveis de Implementação Separar apenas as classes/handlers de command e query. Mesmo banco. Write model normalizado, read model denormalizado. Mesmo banco, schemas diferentes. Write DB (SQL normalizado) + Read DB (Redis, Elasticsearch, MongoDB). Sync via eventos. Exemplo de Implementação typescript // COMMAND — muda estado, retorna void/Result class CreateOrderCommand { orderId: string; customerId: string; items: OrderItem[] } class CreateOrderHandler { async handle(cmd: CreateOrderCommand) { const order = Order.create(cmd.orderId, cmd.customerId, cmd.items) await this.repo.save(order) // salva aggregate no write DB await this.eventBus.publish(order.events) // dispara domain events } } // QUERY — apenas leitura, retorna DTO otimizado class GetOrderSummaryQuery { orderId: string } class GetOrderSummaryHandler { async handle(q: GetOrderSummaryQuery): Promise { return this.readDb.query( SELECT FROM order summaries WHERE id = ? , [q.orderId]) } } // PROJECTION — sincroniza read model com eventos class OrderSummaryProjection { on(OrderCreated, event) { this.readDb.insert('order summaries', { id: event.orderId, status: 'created', ... }) } on(OrderShipped, event) { this.readDb.update('order summaries', { status: 'shipped' }, { id: event.orderId }) } } CQRS não é obrigatório em toda aplicação. Comece sem ele. Introduza apenas quando a complexidade de leitura e escrita divergir significativamente ou quando precisar escalar os dois lados independentemente.",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#event-sourcing",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Event Sourcing",
+    "anchor": "event-sourcing",
+    "text": "Em vez de armazenar o estado atual , armazena a sequência de eventos que levou a esse estado. O estado é derivado reproduzindo os eventos. Estado tradicional vs Event Sourcing Tabela orders: { id, status: \"shipped\", total: 150 } UPDATE sobrescreve o estado anterior Histórico perdido — não sei quando mudou Difícil de fazer audit trail Event store: OrderCreated → PaymentApproved → OrderShipped Estado = fold(events) Histórico completo e imutável Audit trail nativo, replay possível Event Store + Aggregate typescript // Aggregate reconstitui estado a partir dos eventos class Order { id: string; status: string; total: number pendingEvents: DomainEvent[] = [] // Aplica evento ao estado (sem side effects) private apply(event: DomainEvent) { switch(event.type) { case 'OrderCreated': this.status = 'created'; break case 'PaymentApproved': this.status = 'paid'; break case 'OrderShipped': this.status = 'shipped'; break } } // Reconstitui a partir do event store static fromEvents(events: DomainEvent[]): Order { const order = new Order() events.forEach(e = order.apply(e)) return order } } // Snapshots: otimização para aggregates com muitos eventos // A cada N eventos, salva snapshot do estado atual // Reconstitui a partir do último snapshot + eventos posteriores Projections Consome eventos do event store e constrói views otimizadas para consulta. Pode ser reconstruída do zero via replay. Consultar estado do sistema em qualquer ponto no passado. Replay todos os eventos até o timestamp desejado. Event Sourcing combina naturalmente com CQRS: o command side usa o event store, o query side usa projections derivadas dos eventos.",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#saga-pattern",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Saga Pattern",
+    "anchor": "saga-pattern",
+    "text": "Gerencia transações distribuídas que envolvem múltiplos serviços. Como não há 2PC (Two Phase Commit) em microsserviços, o Saga coordena a sequência de transações locais com compensações em caso de falha. Choreography vs Orchestration Sem coordenador central Cada serviço reage a eventos e publica novos eventos Acoplamento menor, mais autonomia Difícil de visualizar o fluxo completo Bom para fluxos simples Saga Orchestrator coordena cada passo Chama cada serviço diretamente Fluxo visível e centralizado Orchestrator pode se tornar gargalo Bom para fluxos complexos Exemplo — Order Saga (Choreography) Exemplo — Order Saga (Orchestration) typescript class OrderSagaOrchestrator { async execute(orderId: string) { try { await inventoryService.reserve(orderId) // passo 1 await paymentService.charge(orderId) // passo 2 await orderService.confirm(orderId) // passo 3 } catch (err) { // Compensações em ordem reversa await inventoryService.release(orderId) // compensa passo 1 await orderService.cancel(orderId) // cancela pedido } } } Sagas garantem eventual consistency, não atomicidade imediata. Entre os passos, o sistema fica em estado intermediário. Design para isso — o sistema deve ser capaz de lidar com compensações a qualquer momento.",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#hexagonal-clean-architecture",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Hexagonal & Clean Architecture",
+    "anchor": "hexagonal-clean-architecture",
+    "text": "Ambas focam em isolar o domínio de detalhes de infraestrutura (banco de dados, frameworks, APIs externas) através de camadas e interfaces. Hexagonal Architecture (Ports & Adapters) typescript // PORT (interface definida pelo domínio) interface OrderRepository { save(order: Order): Promise findById(id: string): Promise } // ADAPTER (implementa o port, conhece infraestrutura) class PostgresOrderRepository implements OrderRepository { async save(order: Order) { / SQL INSERT/UPDATE / } async findById(id: string) { / SQL SELECT / } } // DOMÍNIO não conhece PostgreSQL — só a interface class CreateOrderUseCase { constructor(private repo: OrderRepository) {} // injeta PORT async execute(dto: CreateOrderDto) { const order = Order.create(dto) await this.repo.save(order) // usa interface — adapter é transparente } } Clean Architecture — Camadas Regra: dependências apontam SEMPRE para dentro. Entities não conhecem Use Cases, Use Cases não conhecem Controllers. A diferença entre Hexagonal e Clean Architecture é mais de nomenclatura do que de conceito. Ambas aplicam o mesmo princípio: domínio no centro, infraestrutura nas bordas, tudo conectado via interfaces.",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
+  },
+  {
+    "id": "arquiteturas#domain-driven-design-ddd",
+    "slug": "arquiteturas",
+    "title": "Padrões de Arquitetura",
+    "category": "architecture",
+    "section": "Domain-Driven Design (DDD)",
+    "anchor": "domain-driven-design-ddd",
+    "text": "Abordagem de design que coloca o modelo de domínio no centro do desenvolvimento. O código reflete a linguagem e os conceitos do negócio. Blocos Fundamentais (Building Blocks) Cluster de objetos tratados como unidade transacional. Tem uma Aggregate Root que controla acesso. Apenas a root é referenciada externamente Consistência garantida dentro do aggregate Persiste e carrega como unidade Tem identidade única (ID) que persiste ao longo do tempo, mesmo que seus atributos mudem. Identificada por ID, não por atributos Dois objetos com mesmo ID = mesma entidade Ex: Order, Customer, Product Definido por seus atributos, não tem identidade própria. Imutável. Dois objetos com mesmos atributos = iguais Ex: Money, Address, Email, DateRange Troca se o VO inteiro, nunca muda atributos Lógica de domínio que não pertence naturalmente a uma entidade ou VO. Sem estado próprio Opera com múltiplos aggregates Ex: TransferMoneyService, PricingService Interface para persistência e recuperação de aggregates. Oculta detalhes de banco de dados. Definido no domínio, implementado na infra Métodos com semântica de domínio Ex: findByCustomer(), findPendingOrders() Notificação de algo que aconteceu no domínio. Imutável, no passado. Nome no passado: PedidoCriado, PagamentoAprovado Dados suficientes para consumidores agirem Publicado pela aggregate root Bounded Context Cada contexto tem seu próprio modelo — context map define as relações entre eles. Anti Corruption Layer (ACL) faz tradução entre bounded contexts diferentes. typescript // Value Object imutável class Money { constructor( readonly amount: number, readonly currency: string ) { if (amount < 0) throw new Error('Amount cannot be negative') Object.freeze(this) // imutável } add(other: Money): Money { // retorna novo objeto if (this.currency !== other.currency) throw new Error('Currency mismatch') return new Money(this.amount + other.amount, this.currency) } equals(other: Money): boolean { return this.amount === other.amount && this.currency === other.currency } }",
+    "tags": [
+      "CQRS",
+      "Event Sourcing",
+      "DDD",
+      "Hexagonal"
+    ]
   }
 ]

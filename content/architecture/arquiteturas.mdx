@@ -1,0 +1,461 @@
+---
+title: "Padrões de Arquitetura"
+slug: arquiteturas
+category: architecture
+icon: "🏛️"
+accent: "#34d399"
+description: "CQRS, Event Sourcing, Hexagonal, Clean Architecture, DDD e Event-Driven Architecture."
+tags: [CQRS, Event Sourcing, DDD, Hexagonal]
+order: 4
+updated: 2026-07-22
+---
+
+## Event-Driven Architecture (EDA)
+
+Arquitetura onde componentes se comunicam exclusivamente via **eventos** — fatos imutáveis que representam algo que aconteceu no domínio.
+
+### Tipos de Evento
+
+<CardGrid cols={3}>
+
+<Card accent="#34d399" title="Domain Event">
+Fato relevante para o domínio. Ex: `PedidoCriado`, `PagamentoAprovado`. Imutável, passado.
+</Card>
+
+<Card accent="#34d399" title="Integration Event">
+Evento publicado para outros serviços (além das fronteiras do bounded context). Contrato público.
+</Card>
+
+<Card accent="#34d399" title="Command Event">
+Intenção de fazer algo. Ex: `CriarPedido`. Diferente de domain event — pode falhar.
+</Card>
+
+<Card accent="#34d399" title="Query Event">
+Consulta assíncrona. Producer pergunta algo, consumer responde via evento separado.
+</Card>
+
+</CardGrid>
+
+### Vantagens e Desafios
+
+<CardGrid cols={2}>
+
+<Card accent="#66bb6a" title="✅ Vantagens">
+- Baixo acoplamento entre serviços
+- Escala horizontalmente com facilidade
+- Novo consumer sem mudar producer
+- Auditoria natural (log de eventos)
+- Temporal decoupling: consumer pode estar offline
+</Card>
+
+<Card accent="#f87171" title="⚠️ Desafios">
+- Eventual consistency — dados podem divergir
+- Rastreamento de fluxo complexo
+- Schema evolution: versionar eventos é difícil
+- Debugging requer ferramentas específicas (Jaeger, Zipkin)
+- Testes de integração mais complexos
+</Card>
+
+</CardGrid>
+
+### Fluxo EDA
+
+<FlowDiagram
+  rows={[
+    { box: "Order Service", color: "#34d399", note: "1. Processa comando CriarPedido; 2. Salva estado no banco; 3. Publica evento PedidoCriado" },
+    { box: "Event Bus (Kafka/SQS/RabbitMQ)", color: "#38bdf8", indent: 1 },
+    { box: "Inventory Service", color: "#34d399", indent: 2, note: "→ reserva estoque" },
+    { box: "Payment Service", color: "#34d399", indent: 2, note: "→ inicia cobrança" },
+    { box: "Notify Service", color: "#34d399", indent: 2, note: "→ envia email de confirmação" },
+  ]}
+/>
+
+*Cada serviço reage independentemente, sem conhecer os outros*
+
+<Callout type="info">
+EDA não substitui chamadas síncronas para tudo. Use REST/gRPC para leitura de dados e operações que precisam de resposta imediata. Use eventos para notificar sobre mudanças de estado.
+</Callout>
+
+## CQRS — Command Query Responsibility Segregation
+
+Separa as operações de **escrita** (Commands) das de **leitura** (Queries) em modelos distintos — podendo usar bancos diferentes para cada lado.
+
+### Conceito Core
+
+<FlowDiagram
+  title="COMMAND SIDE (Write Model)"
+  rows={[
+    { box: "User" },
+    { box: "Command Handler", color: "#38bdf8", indent: 1 },
+    { box: "Aggregate", color: "#38bdf8", indent: 2 },
+    { box: "Write DB", color: "#38bdf8", indent: 3, note: "normalizado" },
+  ]}
+/>
+
+<FlowDiagram
+  rows={[
+    { box: "Domain Event" },
+    { box: "Projection", color: "#38bdf8", indent: 1, note: "denormaliza para leitura" },
+    { box: "Read DB", color: "#38bdf8", indent: 2, note: "otimizado para query" },
+  ]}
+/>
+
+<FlowDiagram
+  title="QUERY SIDE (Read Model)"
+  rows={[
+    { box: "User" },
+    { box: "Query Handler", color: "#38bdf8", indent: 1 },
+    { box: "Read Store", color: "#38bdf8", indent: 2 },
+  ]}
+/>
+
+### Níveis de Implementação
+
+<CardGrid cols={3}>
+
+<Card accent="#34d399" title="Nível 1 — Simples">
+Separar apenas as classes/handlers de command e query. Mesmo banco.
+</Card>
+
+<Card accent="#34d399" title="Nível 2 — Modelos Separados">
+Write model normalizado, read model denormalizado. Mesmo banco, schemas diferentes.
+</Card>
+
+<Card accent="#34d399" title="Nível 3 — Bancos Separados">
+Write DB (SQL normalizado) + Read DB (Redis, Elasticsearch, MongoDB). Sync via eventos.
+</Card>
+
+</CardGrid>
+
+### Exemplo de Implementação
+
+```typescript
+// COMMAND — muda estado, retorna void/Result
+class CreateOrderCommand {
+  orderId: string; customerId: string; items: OrderItem[]
+}
+
+class CreateOrderHandler {
+  async handle(cmd: CreateOrderCommand) {
+    const order = Order.create(cmd.orderId, cmd.customerId, cmd.items)
+    await this.repo.save(order)        // salva aggregate no write DB
+    await this.eventBus.publish(order.events) // dispara domain events
+  }
+}
+
+// QUERY — apenas leitura, retorna DTO otimizado
+class GetOrderSummaryQuery { orderId: string }
+
+class GetOrderSummaryHandler {
+  async handle(q: GetOrderSummaryQuery): Promise<OrderSummaryDto> {
+    return this.readDb.query(`SELECT * FROM order_summaries WHERE id = ?`, [q.orderId])
+  }
+}
+
+// PROJECTION — sincroniza read model com eventos
+class OrderSummaryProjection {
+  on(OrderCreated, event) {
+    this.readDb.insert('order_summaries', { id: event.orderId, status: 'created', ... })
+  }
+  on(OrderShipped, event) {
+    this.readDb.update('order_summaries', { status: 'shipped' }, { id: event.orderId })
+  }
+}
+```
+
+<Callout type="warn">
+CQRS não é obrigatório em toda aplicação. Comece sem ele. Introduza apenas quando a complexidade de leitura e escrita divergir significativamente ou quando precisar escalar os dois lados independentemente.
+</Callout>
+
+## Event Sourcing
+
+Em vez de armazenar o **estado atual**, armazena a **sequência de eventos** que levou a esse estado. O estado é derivado reproduzindo os eventos.
+
+### Estado tradicional vs Event Sourcing
+
+<CardGrid cols={2}>
+
+<Card accent="#f87171" title="❌ Tradicional (mutable state)">
+- Tabela orders: `{ id, status: "shipped", total: 150 }`
+- UPDATE sobrescreve o estado anterior
+- Histórico perdido — não sei quando mudou
+- Difícil de fazer audit trail
+</Card>
+
+<Card accent="#66bb6a" title="✅ Event Sourcing (append-only)">
+- Event store: OrderCreated → PaymentApproved → OrderShipped
+- Estado = fold(events)
+- Histórico completo e imutável
+- Audit trail nativo, replay possível
+</Card>
+
+</CardGrid>
+
+### Event Store + Aggregate
+
+```typescript
+// Aggregate reconstitui estado a partir dos eventos
+class Order {
+  id: string; status: string; total: number
+  pendingEvents: DomainEvent[] = []
+
+  // Aplica evento ao estado (sem side effects)
+  private apply(event: DomainEvent) {
+    switch(event.type) {
+      case 'OrderCreated':  this.status = 'created'; break
+      case 'PaymentApproved': this.status = 'paid'; break
+      case 'OrderShipped':  this.status = 'shipped'; break
+    }
+  }
+
+  // Reconstitui a partir do event store
+  static fromEvents(events: DomainEvent[]): Order {
+    const order = new Order()
+    events.forEach(e => order.apply(e))
+    return order
+  }
+}
+
+// Snapshots: otimização para aggregates com muitos eventos
+// A cada N eventos, salva snapshot do estado atual
+// Reconstitui a partir do último snapshot + eventos posteriores
+```
+
+### Projections
+
+<CardGrid cols={2}>
+
+<Card accent="#34d399" title="📊 Read Model Projection">
+Consome eventos do event store e constrói views otimizadas para consulta. Pode ser reconstruída do zero via replay.
+</Card>
+
+<Card accent="#34d399" title="🔄 Temporal Query">
+Consultar estado do sistema em qualquer ponto no passado. Replay todos os eventos até o timestamp desejado.
+</Card>
+
+</CardGrid>
+
+<Callout type="info">
+Event Sourcing combina naturalmente com CQRS: o command side usa o event store, o query side usa projections derivadas dos eventos.
+</Callout>
+
+## Saga Pattern
+
+Gerencia transações distribuídas que envolvem múltiplos serviços. Como não há 2PC (Two-Phase Commit) em microsserviços, o Saga coordena a sequência de transações locais com **compensações** em caso de falha.
+
+### Choreography vs Orchestration
+
+<CardGrid cols={2}>
+
+<Card accent="#38bdf8" title="🕊️ Choreography (Coreografia)">
+- Sem coordenador central
+- Cada serviço reage a eventos e publica novos eventos
+- Acoplamento menor, mais autonomia
+- Difícil de visualizar o fluxo completo
+- Bom para fluxos simples
+</Card>
+
+<Card accent="#a78bfa" title="🎼 Orchestration (Orquestração)">
+- Saga Orchestrator coordena cada passo
+- Chama cada serviço diretamente
+- Fluxo visível e centralizado
+- Orchestrator pode se tornar gargalo
+- Bom para fluxos complexos
+</Card>
+
+</CardGrid>
+
+### Exemplo — Order Saga (Choreography)
+
+<FlowDiagram
+  rows={[
+    { box: "Order Svc", color: "#34d399", note: "──PedidoCriado──►" },
+    { box: "Inventory Svc", color: "#38bdf8", indent: 1, note: "──EstoqueReservado──►" },
+    { box: "Payment Svc", color: "#38bdf8", indent: 2, note: "──PagamentoAprovado──►" },
+    { box: "Order Svc", color: "#34d399", indent: 3, note: "──PedidoConfirmado──► OK" },
+  ]}
+/>
+
+<FlowDiagram
+  title="FALHA: PagamentoRecusado"
+  rows={[
+    { box: "Payment Svc", color: "#38bdf8", note: "──PagamentoRecusado──►" },
+    { box: "Inventory Svc", color: "#38bdf8", indent: 1, note: "──► COMPENSAÇÃO: LiberaEstoque" },
+    { box: "Order Svc", color: "#34d399", indent: 1, note: "──► COMPENSAÇÃO: CancelaPedido" },
+  ]}
+/>
+
+### Exemplo — Order Saga (Orchestration)
+
+```typescript
+class OrderSagaOrchestrator {
+  async execute(orderId: string) {
+    try {
+      await inventoryService.reserve(orderId)    // passo 1
+      await paymentService.charge(orderId)       // passo 2
+      await orderService.confirm(orderId)        // passo 3
+    } catch (err) {
+      // Compensações em ordem reversa
+      await inventoryService.release(orderId)    // compensa passo 1
+      await orderService.cancel(orderId)         // cancela pedido
+    }
+  }
+}
+```
+
+<Callout type="warn">
+Sagas garantem eventual consistency, não atomicidade imediata. Entre os passos, o sistema fica em estado intermediário. Design para isso — o sistema deve ser capaz de lidar com compensações a qualquer momento.
+</Callout>
+
+## Hexagonal & Clean Architecture
+
+Ambas focam em **isolar o domínio** de detalhes de infraestrutura (banco de dados, frameworks, APIs externas) através de camadas e interfaces.
+
+### Hexagonal Architecture (Ports & Adapters)
+
+<FlowDiagram
+  rows={[
+    { box: "REST Controller", color: "#38bdf8", note: "DRIVING SIDE (inicia interações) → PORT (input port)" },
+    { box: "CLI Command", color: "#38bdf8", note: "DRIVING SIDE (inicia interações) → PORT (input port)" },
+    { box: "Test Fixture", color: "#38bdf8", note: "DRIVING SIDE (inicia interações) → PORT (input port)" },
+    { box: "Interface (Use Case)", indent: 1, note: "port de entrada — definida pelo domínio" },
+    { box: "DOMAIN CORE", indent: 2 },
+    { box: "Interface (Repository, EventBus...)", indent: 3, note: "port de saída — definida pelo domínio" },
+    { box: "PostgreSQL Adapter", color: "#38bdf8", indent: 4, note: "DRIVEN SIDE (responde a interações)" },
+    { box: "Email Adapter", color: "#38bdf8", indent: 4, note: "DRIVEN SIDE (responde a interações)" },
+    { box: "Kafka Adapter", color: "#38bdf8", indent: 4, note: "DRIVEN SIDE (responde a interações)" },
+  ]}
+/>
+
+```typescript
+// PORT (interface definida pelo domínio)
+interface OrderRepository {
+  save(order: Order): Promise<void>
+  findById(id: string): Promise<Order | null>
+}
+
+// ADAPTER (implementa o port, conhece infraestrutura)
+class PostgresOrderRepository implements OrderRepository {
+  async save(order: Order) { /* SQL INSERT/UPDATE */ }
+  async findById(id: string) { /* SQL SELECT */ }
+}
+
+// DOMÍNIO não conhece PostgreSQL — só a interface
+class CreateOrderUseCase {
+  constructor(private repo: OrderRepository) {} // injeta PORT
+  async execute(dto: CreateOrderDto) {
+    const order = Order.create(dto)
+    await this.repo.save(order) // usa interface — adapter é transparente
+  }
+}
+```
+
+### Clean Architecture — Camadas
+
+<FlowDiagram
+  title="Clean Architecture — Camadas"
+  rows={[
+    { box: "Frameworks & Drivers", color: "#38bdf8", note: "Express, TypeORM, Kafka..." },
+    { box: "Interface Adapters", color: "#a78bfa", indent: 1, note: "Controllers, Presenters, Gateways" },
+    { box: "Application", color: "#34d399", indent: 2, note: "Use Cases" },
+    { box: "Entities", color: "#a78bfa", indent: 3, note: "Domain — núcleo, sem deps externas" },
+  ]}
+/>
+
+Regra: dependências apontam SEMPRE para dentro. Entities não conhecem Use Cases, Use Cases não conhecem Controllers.
+
+<Callout type="tip">
+A diferença entre Hexagonal e Clean Architecture é mais de nomenclatura do que de conceito. Ambas aplicam o mesmo princípio: domínio no centro, infraestrutura nas bordas, tudo conectado via interfaces.
+</Callout>
+
+## Domain-Driven Design (DDD)
+
+Abordagem de design que coloca o **modelo de domínio** no centro do desenvolvimento. O código reflete a linguagem e os conceitos do negócio.
+
+### Blocos Fundamentais (Building Blocks)
+
+<CardGrid cols={2}>
+
+<Card accent="#34d399" title="🧱 Aggregate">
+Cluster de objetos tratados como unidade transacional. Tem uma **Aggregate Root** que controla acesso.
+
+- Apenas a root é referenciada externamente
+- Consistência garantida dentro do aggregate
+- Persiste e carrega como unidade
+</Card>
+
+<Card accent="#34d399" title="💎 Entity">
+Tem identidade única (ID) que persiste ao longo do tempo, mesmo que seus atributos mudem.
+
+- Identificada por ID, não por atributos
+- Dois objetos com mesmo ID = mesma entidade
+- Ex: Order, Customer, Product
+</Card>
+
+<Card accent="#34d399" title="💠 Value Object">
+Definido por seus atributos, não tem identidade própria. **Imutável.**
+
+- Dois objetos com mesmos atributos = iguais
+- Ex: Money, Address, Email, DateRange
+- Troca-se o VO inteiro, nunca muda atributos
+</Card>
+
+<Card accent="#34d399" title="🏛️ Domain Service">
+Lógica de domínio que não pertence naturalmente a uma entidade ou VO.
+
+- Sem estado próprio
+- Opera com múltiplos aggregates
+- Ex: TransferMoneyService, PricingService
+</Card>
+
+<Card accent="#34d399" title="📦 Repository">
+Interface para persistência e recuperação de aggregates. Oculta detalhes de banco de dados.
+
+- Definido no domínio, implementado na infra
+- Métodos com semântica de domínio
+- Ex: findByCustomer(), findPendingOrders()
+</Card>
+
+<Card accent="#34d399" title="🔔 Domain Event">
+Notificação de algo que aconteceu no domínio. Imutável, no passado.
+
+- Nome no passado: PedidoCriado, PagamentoAprovado
+- Dados suficientes para consumidores agirem
+- Publicado pela aggregate root
+</Card>
+
+</CardGrid>
+
+### Bounded Context
+
+<FlowDiagram
+  title='O mesmo conceito "Produto" tem significados diferentes em contextos distintos:'
+  rows={[
+    { box: "Catálogo", color: "#34d399", note: "Produto { id, nome, foto, descrição, categorias, SEO metadata }" },
+    { box: "Estoque", color: "#38bdf8", note: "Produto { id, SKU, quantidade, localização no armazém }" },
+    { box: "Financeiro", color: "#a78bfa", note: "Produto { id, preço, custo, margem, impostos }" },
+    { box: "Shipping", color: "#34d399", note: "Produto { id, peso, dimensões, tipo embalagem }" },
+  ]}
+/>
+
+Cada contexto tem seu próprio modelo — context map define as relações entre eles. Anti-Corruption Layer (ACL) faz tradução entre bounded contexts diferentes.
+
+```typescript
+// Value Object imutável
+class Money {
+  constructor(
+    readonly amount: number,
+    readonly currency: string
+  ) {
+    if (amount < 0) throw new Error('Amount cannot be negative')
+    Object.freeze(this) // imutável
+  }
+  add(other: Money): Money { // retorna novo objeto
+    if (this.currency !== other.currency) throw new Error('Currency mismatch')
+    return new Money(this.amount + other.amount, this.currency)
+  }
+  equals(other: Money): boolean {
+    return this.amount === other.amount && this.currency === other.currency
+  }
+}
+```
