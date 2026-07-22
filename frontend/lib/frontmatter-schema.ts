@@ -3,6 +3,13 @@ import { z } from "zod";
 export const CATEGORIES = ["backend", "infra", "database", "architecture"] as const;
 export type Category = (typeof CATEGORIES)[number];
 
+export const CATEGORY_LABELS: Record<Category, string> = {
+  backend: "Backend",
+  infra: "Infraestrutura",
+  database: "Database",
+  architecture: "Arquitetura",
+};
+
 export const frontmatterSchema = z.object({
   title: z.string().min(1),
   slug: z.string().regex(/^[a-z0-9-]+$/),
